@@ -101,6 +101,42 @@ test("collectChainIds reports a cycle rather than looping forever", async () => 
   assert.equal(truncated, true, "an unresolvable loop makes the answer incomplete");
 });
 
+test("collectChainIds expands a shared module once, not once per importer", async () => {
+  // A diamond: two branches converge on one module. Expanding it per path is
+  // what makes a wide chain cost exponentially many loads, and the whole walk
+  // runs before every write.
+  const steps = new Map([
+    ["root", ex("a", "b")],
+    ["a", ex("shared")],
+    ["b", ex("shared")],
+    ["shared", ex("leaf")],
+    ["leaf", []],
+  ]);
+  const loads = [];
+  const { ids, truncated } = await collectChainIds("root", async (id) => {
+    loads.push(id);
+    return steps.get(id) ?? [];
+  });
+  assert.deepEqual(ids.sort(), ["a", "b", "leaf", "shared"], "converging paths lose no id");
+  assert.equal(truncated, false, "a diamond is not a cycle");
+  assert.equal(loads.filter((id) => id === "shared").length, 1);
+  assert.equal(loads.filter((id) => id === "leaf").length, 1, "the subtree below it is not re-walked either");
+});
+
+test("collectChainIds reports a cycle reached through an already-expanded module", async () => {
+  // Going around a loop only increases depth, so its return edge always lands
+  // on a node the depth memo skips. That is why the cycle verdict is decided
+  // from the recorded edges rather than from whichever path was walked.
+  const steps = new Map([
+    ["root", ex("a", "loop")],
+    ["a", ex("loop")],
+    ["loop", ex("back")],
+    ["back", ex("loop")],
+  ]);
+  const { truncated } = await collectChainIds("root", async (id) => steps.get(id) ?? []);
+  assert.equal(truncated, true, "a loop is unbounded, so the chain was not fully enumerated");
+});
+
 test("collectChainIds reports hitting the depth limit", async () => {
   const steps = new Map();
   for (let i = 0; i < DOCUMENTED_MAX_DEPTH + 3; i += 1) steps.set(`n${i}`, ex(`n${i + 1}`));
