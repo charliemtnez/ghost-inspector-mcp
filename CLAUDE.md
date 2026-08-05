@@ -161,7 +161,9 @@ Error messages follow the same rule: say what to do next, not just what went wro
 ## Commands
 
 ```bash
-npm install
+npm ci
+npm run typecheck
+npm test               # builds first, then runs the suite
 npm run build          # tsc -> dist/
 npm run dev            # watch mode
 npm start              # run the built server over stdio
@@ -170,6 +172,16 @@ npm start              # run the built server over stdio
 export GHOST_INSPECTOR_API_KEY="$(cat ~/.gi-key)"
 npm run build && node dist/index.js
 ```
+
+## Testing conventions
+
+- **No test dependencies.** Node's own `node:test` and `node:assert/strict`. `npm test` is `node --test`, which scans the tree and skips `node_modules`. Do not pass `node --test test/` — that resolves the directory as a module and fails.
+- **Tests import from `dist/`**, so `pretest` builds. There is no test transpiler and there does not need to be one.
+- **Name a test after what breaks if it fails**, not after the function it calls. A failure name should tell you what you broke.
+- **Pin the direction of every uncertain case**, and say why in a comment. Most of this codebase's safety comes from erring consistently: an unknown date reads as *never executed*, an unparseable `dateUpdated` reads as *changed*, a truthy-but-not-`true` flag reads as *not a module*. Those are the assertions worth having.
+- **Pure logic stays separable from the fetch**, so it can be exercised with hand-built fixtures and no network. Every real defect found late in this project was found that way: the `neverExecuted` counter treating passing tests as unrun, the phantom step diff, the cap applied inside a pure function.
+- `server.test.js` starts the real server over stdio. It is the only thing that catches a registration or schema mistake, and where the write gate is proven end to end. **No test configures an API key**, so the suite never reaches Ghost Inspector.
+- **Run a CI step locally before trusting it.** Two bugs in the workflow were caught that way: `node -e script VAR=x` passes argv rather than environment, and a credential grep loose enough to match the suite's own placeholder.
 
 ## Configuration
 

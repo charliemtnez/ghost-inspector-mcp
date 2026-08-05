@@ -1,5 +1,7 @@
 # ghost-inspector-mcp
 
+[![CI](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml)
+
 An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https://ghostinspector.com) API, so you can work with end-to-end browser tests from whatever agent you already use — Claude, OpenAI, OpenCode, your own automation — instead of clicking through the web UI.
 
 ## Status
@@ -119,6 +121,34 @@ All four guards are verified against a live account, on a disposable clone that 
 2. **The run is truncated at the first step that could submit**, and that step becomes an assertion on the same target — so the chain is verified, including that the submit control is reachable, without activating it. On a 30-test sample the guard fired on 25.
 
 There is no option to make it submit; that stays a deliberate `curl`. Use `dryRun` first on anything touching production: it reports exactly what would run, inlined and guarded, without starting a browser or needing an organization id.
+
+## Development
+
+```bash
+npm ci
+npm run typecheck
+npm test          # builds first, then runs the suite
+```
+
+108 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+
+| File | What it pins |
+|---|---|
+| `config.test.js` | The write gate opens for an exact `true` and not for `1` or `yes`; the key is re-read every call so rotation works; `redact` strips both the query parameter and a bare occurrence |
+| `client.test.js` | Truthy is not `true`; an unknown date reads as never-executed, because erring the other way slips a live module into a prune list |
+| `graph.test.js` | A cycle terminates; depth does not inflate on a level that adds nobody; hitting the documented nesting limit is reported rather than passed off as a total |
+| `inventory.test.js` | Every test lands in exactly one bucket; a module is never counted as failing; an empty suite still appears |
+| `modules.test.js` | The transitive radius exceeds the direct count; a cycle is a flag rather than an inflated number; a test that executes nothing is found |
+| `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
+| `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form |
+| `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences |
+| `server.test.js` | The server starts, speaks the protocol, and the write gate holds end to end |
+
+`server.test.js` starts the real server over stdio, which is the only way to catch a registration or schema mistake. No API key is configured anywhere in the suite, so nothing reaches Ghost Inspector and the tests are safe to run against any machine.
+
+CI runs the lot on Node 18, 20, 22 and 24 — the floor in `engines` plus both LTS lines and current, since `npx` runs on whatever Node the user already has. A second job re-runs the leak audit over the **entire history** rather than the working tree, because a leak scrubbed in a later commit is still in the history.
+
+**One limit worth stating.** The API behaviours documented here were verified empirically against a single account on a single plan. They held every time they were checked, but a different plan could differ — if something contradicts this on your account, that is worth an issue.
 
 ## Contributing
 
