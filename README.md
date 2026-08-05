@@ -2,17 +2,18 @@
 
 An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https://ghostinspector.com) API, so you can work with end-to-end browser tests from whatever agent you already use — Claude, OpenAI, OpenCode, your own automation — instead of clicking through the web UI.
 
-## Status: foundation only — not yet useful for daily work
+## Status: early, read-only
 
-Be clear-eyed about what this does today. One tool is implemented:
+Two tools are implemented:
 
 | Tool | Writes? | What it does |
 |---|---|---|
 | `gi_whoami` | no | Verifies your API key and lists the organizations it can reach, with their ids. Start here when something is misconfigured. |
+| `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 
-That is a setup diagnostic, not a workflow. **You cannot yet** list tests, read steps, analyze failures, validate selectors, or change anything. What exists is the part that is tedious to get right: credential handling, the REST client, and the undocumented API behaviours encoded so callers stop rediscovering them.
+Enough to survey an account and see what is red. **You cannot yet** read a test's steps, tell a genuinely broken test from a stale one, validate selectors, or change anything.
 
-Planned, in rough order: `gi_inventory`, `gi_module_usage`, `gi_suite_health`, `gi_stale_tests`, `gi_date_regression`, `gi_validate_test`, then the guarded create/update path.
+Planned, in rough order: `gi_module_usage`, `gi_stale_tests`, `gi_date_regression`, `gi_validate_test`, then the guarded create/update path.
 
 Not published to npm yet, so install from source.
 

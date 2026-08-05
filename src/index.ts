@@ -9,9 +9,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 
 import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
+import { getInventory } from "./inventory.js";
 
 const server = new McpServer({
   name: "ghost-inspector",
@@ -56,6 +58,38 @@ server.registerTool(
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
       };
     }),
+);
+
+server.registerTool(
+  "gi_inventory",
+  {
+    title: "Ghost Inspector: account overview",
+    description:
+      "Read-only tour of the whole account: every folder, the suites inside it, " +
+      "and per-suite counts of passing / failing / module / not-yet-run tests, " +
+      "plus the names of the failing ones. Start here — no other question about " +
+      "this account can be answered without knowing what is in it.\n\n" +
+      "Import-only tests (modules: shared steps that other tests import, the " +
+      "equivalent of a function) are counted in their own bucket and never as " +
+      "failures. Marking a test import-only deletes its stored results, so every " +
+      "module looks permanently unrun; folding that into a failure count invents " +
+      "breakage that does not exist and aims cleanup at the steps the live tests " +
+      "all share. Read the `notes` field before drawing conclusions.\n\n" +
+      "Fetches roughly 440 KB from the API and returns a summary of it, so ask " +
+      "for the whole account rather than probing folder by folder. Totals always " +
+      "describe the entire account even when a filter narrows the listing.",
+    inputSchema: {
+      folder: z
+        .string()
+        .optional()
+        .describe("Case-insensitive substring of a folder name. Omit to see every folder."),
+      failingOnly: z
+        .boolean()
+        .optional()
+        .describe("List only suites with at least one failing test. Totals stay account-wide."),
+    },
+  },
+  async ({ folder, failingOnly }) => safeText(() => getInventory({ folder, failingOnly })),
 );
 
 // Write tools are registered here, behind writesAllowed(). Each one must:

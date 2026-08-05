@@ -175,6 +175,26 @@ export interface TestRecord {
   [key: string]: unknown;
 }
 
+/** Minimal shape of a folder, as returned by `GET /folders/`. */
+export interface FolderRecord {
+  _id: string;
+  name?: string;
+  organization?: string;
+}
+
+/**
+ * Minimal shape of a suite, as returned by `GET /suites/`.
+ *
+ * `folder` is a bare id, unlike a test's `suite`, which arrives expanded.
+ */
+export interface SuiteRecord {
+  _id: string;
+  name?: string;
+  folder?: string;
+  testCount?: number;
+  organization?: string;
+}
+
 /**
  * Whether a test is a module — Ghost Inspector's only unit of reuse, the
  * equivalent of a function. Other tests splice its steps in via an `execute`

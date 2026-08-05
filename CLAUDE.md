@@ -87,6 +87,13 @@ Verified empirically. The official docs omit all of these.
 - `eval` runs in the page's JS context; globals persist across steps.
 - `assign` **does** dispatch `input` and `change`, so it reaches reactive stores and exercises input masks and validation. Do not "work around" it.
 
+**Listing the account** — measured on a ~450-test account, 2026-08-05.
+- 🔴 **There is no organization-scoped listing.** `/organizations/{id}/folders/`, `/suites/` and `/tests/` all 404 with an HTML body. The flat collections are the only way in.
+- `GET /folders/` ~1 KB · `GET /suites/` ~39 KB · `GET /tests/` ~438 KB (~112k tokens). Three requests describe an entire account, and **one `GET /tests/` beats one request per suite** against an undisclosed rate limit.
+- A test's `suite` arrives **expanded** as `{_id, name}`; a suite's `folder` is a **bare id**. So test→suite is free, and only suite→folder needs the suite list.
+- `suite.testCount` agrees with the actual test count. `suite.details` was empty on every suite — do not rely on it.
+- Fetching ~440 KB to return ~10 KB is the expected shape of an aggregation here. Fetch wide, summarise, never forward the API's answer.
+
 **Data model**
 - `GET /tests/` does **not** include `steps`. Per-test `GET` is required for step data — so a module→importers reverse index costs one request per test.
 - `target` may be an **array of fallback selectors**: `[{"selector": "..."}, ...]`, tried in order.
