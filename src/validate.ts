@@ -89,6 +89,8 @@ export interface Expansion {
   depth: number;
   /** True when a chain hit the nesting limit or looped, so part is missing. */
   truncated: boolean;
+  /** Execute steps naming no module id. They run nothing, and are counted rather than dropped in silence. */
+  emptyExecutes: number;
 }
 
 /**
@@ -106,7 +108,7 @@ export async function expandSteps(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
 ): Promise<Expansion> {
-  const report = { modules: [] as string[], depth: 0, truncated: false };
+  const report = { modules: [] as string[], depth: 0, truncated: false, emptyExecutes: 0 };
   const expanded = await expand(steps, load, 0, new Set(), null, null, report);
   return { steps: expanded, ...report };
 }
@@ -118,7 +120,7 @@ async function expand(
   path: Set<string>,
   from: string | null,
   inherited: string | null,
-  report: { modules: string[]; depth: number; truncated: boolean },
+  report: { modules: string[]; depth: number; truncated: boolean; emptyExecutes: number },
 ): Promise<ExpandedStep[]> {
   const out: ExpandedStep[] = [];
   report.depth = Math.max(report.depth, depth);
@@ -142,7 +144,12 @@ async function expand(
     }
 
     const id = str(step["value"]);
-    if (!id) continue;
+    if (!id) {
+      // A broken step, not an ignorable one: it looks like an import and
+      // imports nothing. Counted so the report can say so.
+      report.emptyExecutes += 1;
+      continue;
+    }
     if (path.has(id)) {
       // A cycle cannot resolve. Recording it beats expanding forever.
       report.truncated = true;
@@ -277,6 +284,8 @@ export interface ValidationReport {
     modulesInlined: string[];
     depth: number;
     depthTruncated: boolean;
+    /** Execute steps naming no module id. They cannot run. */
+    emptyExecuteSteps: number;
   };
   guard: Guard | null;
   /** Exactly what would run, or did. Readable without executing anything. */
@@ -417,6 +426,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
       modulesInlined: expansion.modules,
       depth: expansion.depth,
       depthTruncated: expansion.truncated,
+      emptyExecuteSteps: expansion.emptyExecutes,
     },
     guard,
     plan,
@@ -445,6 +455,11 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     if (expansion.truncated) {
       notes.push(
         "A module chain hit the documented 10-level limit or looped, so part of it was not inlined and could not be guarded. Treat this as incomplete.",
+      );
+    }
+    if (expansion.emptyExecutes > 0) {
+      notes.push(
+        `${expansion.emptyExecutes} execute step(s) name no module id, so they run nothing. Fix or remove them — a step that looks like an import and imports nothing misleads the next reader.`,
       );
     }
     if (expanded.length === 0) {

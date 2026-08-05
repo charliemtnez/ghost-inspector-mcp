@@ -170,6 +170,20 @@ test("the combined condition evaluates as the AND of its sides", () => {
   assert.equal(new Function(andConditions("return 1 === 1;", "return 3 === 3;"))(), true);
 });
 
+test("an execute step naming no module is counted, never silently dropped", async () => {
+  // Dropping it makes the plan look complete when the definition is broken.
+  const load = async () => ({ name: "m", steps: [] });
+  const { steps, emptyExecutes } = await expandSteps(
+    [
+      { command: "execute", value: "" },
+      { command: "open", target: "", value: "https://example.com" },
+    ],
+    load,
+  );
+  assert.equal(emptyExecutes, 1);
+  assert.equal(steps.length, 1, "the runnable step still expands");
+});
+
 test("andConditions keeps a lone side verbatim", () => {
   // Wrapping a single script would change nothing but readability — the
   // stored condition should stay recognisable to whoever wrote it.
