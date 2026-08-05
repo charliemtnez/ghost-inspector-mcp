@@ -16,7 +16,7 @@ A 1:1 wrapper does not beat `curl`. The value of this server is in three things:
 
 ## 🔴 Non-negotiable: no consumer data in this repo
 
-This repo is public. Nothing organization-specific ever gets committed — not in code, not in tests, not in docs, not in examples.
+This repo is **private only until the first release, and is written as though it were already public.** Hold that line from the first commit: flipping private → public is one click, and it publishes the entire history at once. Nothing organization-specific ever gets committed — not in code, not in tests, not in docs, not in examples. A leak scrubbed in a later commit is still in the history.
 
 **Never commit:**
 
