@@ -6,7 +6,7 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Seven tools: five that only read, and two that write and are registered only if you opt in.
+Seven tools: five that only read, and two that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
@@ -32,6 +32,8 @@ Ghost Inspector's API is small and stable, so a 1:1 wrapper would add nothing ov
 - **Guardrails on the write path** — there is no version history for test steps and no recycle bin. Overwrites are forever.
 - **Tool descriptions that teach the calling model how not to break things** — the accumulated gotchas ship with the tool, so every agent gets them for free instead of learning them the expensive way.
 
+Other community wrappers of this API exist. The difference here is the posture: read-only until you opt in, no suite deletion at any opt-in level, and every write behind guards that cannot be turned off.
+
 Two worked examples of that third point, because it is the whole thesis.
 
 Marking a test **Import Only** — Ghost Inspector's way of saying "this is a module, other tests import its steps" — *deletes its stored results*. Every module is therefore permanently "never executed": no results, `passing` not a boolean, last-run date pinned to the `1970-01-01` epoch sentinel. The obvious implementation of stale-test detection sorts by last-run date, so it reports every module in your account as the deadest, most broken thing in it, and advises deleting exactly the steps all your live tests share. This server knows that, and ships the predicate that prevents it.
@@ -45,6 +47,10 @@ Requires Node 18+. There is nothing to install ahead of time — your MCP client
 ```bash
 npx -y ghost-inspector-mcp
 ```
+
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D&quality=insiders)
+
+Those two prompt for your key and store it in VS Code's own secret input rather than in a settings file.
 
 To work on the server itself, clone and build instead:
 
@@ -72,11 +78,37 @@ Configuration is environment variables only. There is deliberately no `.env` sup
 claude mcp add ghost-inspector --scope user -- npx -y ghost-inspector-mcp
 ```
 
+### Claude Desktop, Cursor, Windsurf and anything else that takes a JSON config
+
+```json
+{
+  "mcpServers": {
+    "ghost-inspector": {
+      "command": "npx",
+      "args": ["-y", "ghost-inspector-mcp"]
+    }
+  }
+}
+```
+
+No `env` block: the server inherits the environment of whatever launched your client, so exporting the key in your shell profile is enough and it never has to sit in a config file. Add one only if your client cannot inherit it.
+
 ### Any other MCP client
 
-Point it at `npx -y ghost-inspector-mcp` over stdio — or at `node <path>/dist/index.js` from a clone — and pass the key through the environment.
+Point it at `npx -y ghost-inspector-mcp` over stdio, or at `node <path>/dist/index.js` from a clone, and pass the key through the environment.
 
-Either way the server inherits the environment of the process that launches your client, so exporting the key in your shell profile is enough — you never have to put it in a config file.
+### If the tools appear but every call says the key is missing
+
+Your client was almost certainly launched from a desktop icon, Spotlight or a launcher rather than a terminal. Those do not run a login shell, so `~/.zprofile` and `~/.bash_profile` are never read and your `export` never happened — the server starts fine and registers its tools, then finds nothing in the environment.
+
+Either launch the client from a terminal, or have the server read the key itself at launch:
+
+```bash
+claude mcp add ghost-inspector --scope user -- \
+  sh -c 'GHOST_INSPECTOR_API_KEY="$(cat ~/.gi-key)" exec npx -y ghost-inspector-mcp'
+```
+
+The same wrapper works as `"command": "sh"` with `"args": ["-c", "..."]` in a JSON config. The key stays in a `600` file that only your user can read, and never enters the client's configuration.
 
 ## Handling your API key
 
@@ -106,6 +138,8 @@ This server will **never**:
 
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}/` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
+**Failed requests are not retried.** A timeout or a dropped connection surfaces as an error instead of being attempted again. That is a decision, not an omission: `execute` and the write endpoints are not idempotent, and a retry that silently ran a browser test twice — or re-applied a write whose first attempt actually landed — buys convenience with exactly the kind of surprise this server exists to prevent. Read-only calls are safe to retry, so your agent can simply ask again.
+
 **Writes are guarded.** Every mutating tool performs these four in order, and none can be turned off:
 
 1. compare `dateUpdated` across the whole `execute` chain against the last run — a red test whose module was edited *after* its last run is **stale, not broken**, and a fix diagnosed from that failure is diagnosed from a version that no longer exists. Imports nest up to ten levels, so the walk is bounded and detects cycles. On a real account this refused a test whose last run was July 2024 and whose definition was edited eighteen days later: still red on the dashboard two years on;
@@ -134,18 +168,18 @@ npm run typecheck
 npm test          # builds first, then runs the suite
 ```
 
-118 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+122 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
 
 | File | What it pins |
 |---|---|
 | `config.test.js` | The write gate opens for an exact `true` and not for `1` or `yes`; the key is re-read every call so rotation works; `redact` strips both the query parameter and a bare occurrence |
 | `client.test.js` | Truthy is not `true`; an unknown date reads as never-executed, because erring the other way slips a live module into a prune list; a stalled body download cannot outlive the request timeout |
-| `graph.test.js` | A cycle terminates; depth does not inflate on a level that adds nobody; hitting the documented nesting limit is reported rather than passed off as a total |
+| `graph.test.js` | A cycle terminates and is still reported once shared subtrees stop being re-expanded; depth does not inflate on a level that adds nobody; hitting the documented nesting limit is reported rather than passed off as a total |
 | `inventory.test.js` | Every test lands in exactly one bucket; a module is never counted as failing; an empty suite still appears |
 | `modules.test.js` | The transitive radius exceeds the direct count; a cycle is a flag rather than an inflated number; a test that executes nothing is found |
 | `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
 | `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form; an import's condition gates every step it imports instead of being dropped |
-| `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences |
+| `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences; a field that only appears after the write is still an unexpected change |
 | `server.test.js` | The server starts, speaks the protocol, the write gate holds end to end, and every tool's annotations state the posture the code enforces |
 
 `server.test.js` starts the real server over stdio, which is the only way to catch a registration or schema mistake. No API key is configured anywhere in the suite, so nothing reaches Ghost Inspector and the tests are safe to run against any machine.
@@ -156,7 +190,7 @@ CI runs the lot on Node 18, 20, 22 and 24 — the floor in `engines` plus both L
 
 ## Contributing
 
-Issues and PRs welcome, but this is maintained on a best-effort basis — a tool built to solve a real problem, not a supported product.
+Issues and PRs welcome, but this is maintained on a best-effort basis — a tool built to solve a real problem, not a supported product. Changes are listed in [CHANGELOG.md](CHANGELOG.md); anything security-relevant goes through [SECURITY.md](SECURITY.md) rather than a public issue.
 
 No organization-specific data in code, tests, docs or examples: no ids, hostnames, folder or suite naming conventions, or test-data identities. All of that belongs in the caller's configuration. Use obvious placeholders like `https://example.com` and `jane@example.com`.
 
