@@ -123,6 +123,44 @@ export function walk(start: string, edges: ReadonlyMap<string, Iterable<string>>
 }
 
 /**
+ * Whether `edges` contain a loop reachable from `start`.
+ *
+ * Structural rather than path-based on purpose. `collectChainIds` skips a
+ * subtree it has already expanded, so a loop may never be re-walked from the
+ * path that would reveal it — and going around a loop only ever increases
+ * depth, so the return edge lands on exactly the kind of node that gets
+ * skipped. Deciding it from the recorded edges instead is independent of the
+ * order they were discovered in, and costs no requests.
+ *
+ * @param start Id to search from.
+ * @param edges Executed ids by test id, as recorded while walking.
+ * @returns True when some node reachable from `start` reaches itself.
+ */
+export function hasCycle(start: string, edges: ReadonlyMap<string, string[]>): boolean {
+  const settled = new Set<string>();
+  const onPath = new Set<string>([start]);
+  const stack: Array<{ id: string; cursor: number }> = [{ id: start, cursor: 0 }];
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1] as { id: string; cursor: number };
+    const children = edges.get(frame.id) ?? [];
+    if (frame.cursor >= children.length) {
+      stack.pop();
+      onPath.delete(frame.id);
+      settled.add(frame.id);
+      continue;
+    }
+    const next = children[frame.cursor] as string;
+    frame.cursor += 1;
+    if (onPath.has(next)) return true;
+    if (settled.has(next)) continue;
+    onPath.add(next);
+    stack.push({ id: next, cursor: 0 });
+  }
+  return false;
+}
+
+/**
  * Collects every module id reachable from one test, following `execute` steps.
  *
  * Loads only what the chain touches, so a single test costs a handful of
@@ -139,25 +177,34 @@ export async function collectChainIds(
   loadSteps: (id: string) => Promise<Steps>,
 ): Promise<{ ids: string[]; truncated: boolean }> {
   const seen = new Set<string>();
-  let truncated = false;
+  const edges = new Map<string, string[]>();
+  // Shallowest depth at which a node's subtree was expanded. Reached again with
+  // no more depth budget than last time, it can reach nothing new and is
+  // skipped; reached *shallower*, it has budget for more and is walked again.
+  // Without this a diamond-shaped chain is re-expanded once per path, and this
+  // whole walk runs before every write.
+  const expandedAt = new Map<string, number>();
+  let hitDepthLimit = false;
 
-  const visit = async (id: string, depth: number, path: Set<string>): Promise<void> => {
+  const visit = async (id: string, depth: number): Promise<void> => {
     if (depth >= DOCUMENTED_MAX_DEPTH) {
-      truncated = true;
+      hitDepthLimit = true;
       return;
     }
-    for (const next of executedIds(await loadSteps(id))) {
-      if (path.has(next)) {
-        truncated = true;
-        continue;
-      }
-      if (!seen.has(next)) seen.add(next);
-      await visit(next, depth + 1, new Set([...path, next]));
+    const previous = expandedAt.get(id);
+    if (previous !== undefined && previous <= depth) return;
+    expandedAt.set(id, depth);
+
+    const executed = executedIds(await loadSteps(id));
+    edges.set(id, executed);
+    for (const next of executed) {
+      seen.add(next);
+      await visit(next, depth + 1);
     }
   };
 
-  await visit(rootId, 0, new Set([rootId]));
-  return { ids: [...seen], truncated };
+  await visit(rootId, 0);
+  return { ids: [...seen], truncated: hitDepthLimit || hasCycle(rootId, edges) };
 }
 
 /**
