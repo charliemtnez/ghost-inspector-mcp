@@ -1,17 +1,20 @@
 {
   "name": "ghost-inspector-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for the Ghost Inspector API \u2014 analyze, validate and safely update end-to-end browser tests from any MCP-capable agent",
   "license": "MIT",
   "author": "charliemtnez",
   "type": "module",
+  "mcpName": "io.github.charliemtnez/ghost-inspector-mcp",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "ghost-inspector-mcp": "dist/index.js"
   },
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
