@@ -16,7 +16,7 @@ export type Steps = Array<Record<string, unknown>>;
 export const DOCUMENTED_MAX_DEPTH = 10;
 
 /** Requests in flight. Low on purpose: the rate limit is undisclosed. */
-const CONCURRENCY = 5;
+export const REQUEST_CONCURRENCY = 5;
 
 export interface BrokenReference {
   test: string;
@@ -160,8 +160,17 @@ export async function collectChainIds(
   return { ids: [...seen], truncated };
 }
 
-/** Runs `fn` over `items` with at most `limit` in flight, preserving order. */
-async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/**
+ * Runs `fn` over `items` with at most `limit` in flight, preserving order.
+ * Every fan-out against the API comes through here, so one knob owns how hard
+ * this server leans on an undisclosed rate limit.
+ *
+ * @param items Inputs, in order.
+ * @param limit Maximum calls in flight.
+ * @param fn Async worker. Its rejection propagates to the caller.
+ * @returns Results in the same order as `items`.
+ */
+export async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let cursor = 0;
   await Promise.all(
@@ -194,7 +203,7 @@ export interface Definitions {
  * @returns Steps by test id, plus how many could not be read.
  */
 export async function fetchDefinitions(tests: TestRecord[]): Promise<Definitions> {
-  const fetched = await pool(tests, CONCURRENCY, async (test) => {
+  const fetched = await pool(tests, REQUEST_CONCURRENCY, async (test) => {
     try {
       const full = await request<TestRecord>("GET", `tests/${test._id}`);
       return { id: test._id, steps: (full.steps ?? []) as Steps };

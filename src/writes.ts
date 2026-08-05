@@ -38,7 +38,7 @@ import {
   type SuiteRecord,
   type TestRecord,
 } from "./client.js";
-import { collectChainIds, type Steps } from "./graph.js";
+import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
 
 /** Step fields that define behaviour. Anything else is presentation. */
 const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional"] as const;
@@ -237,9 +237,11 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
     return steps;
   };
 
-  // Guard 1, before anything else: the chain, not just the test.
+  // Guard 1, before anything else: the chain, not just the test. Fetched at
+  // the same bounded concurrency as the account scans — the fan-out multiplies
+  // against an undisclosed rate limit.
   const { ids, truncated } = await collectChainIds(options.testId, loadSteps);
-  const chain = await Promise.all(ids.map((id) => request<TestRecord>("GET", `tests/${id}`)));
+  const chain = await pool(ids, REQUEST_CONCURRENCY, (id) => request<TestRecord>("GET", `tests/${id}`));
   const staleness = assessStaleness(before, chain, truncated);
 
   const sentFields = [
