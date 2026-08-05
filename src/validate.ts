@@ -56,7 +56,7 @@ export interface ExpandedStep {
   fromModule: string | null;
 }
 
-interface Loaded {
+export interface Loaded {
   name: string;
   steps: Steps;
 }
@@ -65,13 +65,59 @@ function str(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-/** Flattens a step list, inlining every `execute` chain it references. */
+/**
+ * Combines an inherited condition with a step's own, the way Ghost Inspector
+ * does when it executes an import: AND-ed, accumulating at every level. Each
+ * side is a script with an explicit `return` — the same contract as `eval` —
+ * so each is wrapped in an IIFE to keep its `return` from ending the combined
+ * script early.
+ *
+ * @param outer Condition accumulated from the enclosing `execute` steps.
+ * @param inner The step's own condition.
+ * @returns A script equivalent to `outer && inner`, or whichever side exists.
+ */
+export function andConditions(outer: string | null, inner: string | null): string | null {
+  if (!outer) return inner;
+  if (!inner) return outer;
+  return `return (function () { ${outer} })() && (function () { ${inner} })();`;
+}
+
+export interface Expansion {
+  steps: ExpandedStep[];
+  /** Module names inlined, in first-encounter order. */
+  modules: string[];
+  depth: number;
+  /** True when a chain hit the nesting limit or looped, so part is missing. */
+  truncated: boolean;
+}
+
+/**
+ * Flattens a step list, inlining every `execute` chain it references.
+ *
+ * A condition on an `execute` step is carried into every step it imports,
+ * AND-ed with their own, because that is what Ghost Inspector does when the
+ * real test runs. Dropping it would validate steps the real test skips.
+ *
+ * @param steps The definition as written.
+ * @param load Reads one test's name and steps by id.
+ * @returns The flattened steps and what the flattening had to do.
+ */
+export async function expandSteps(
+  steps: Steps,
+  load: (id: string) => Promise<Loaded>,
+): Promise<Expansion> {
+  const report = { modules: [] as string[], depth: 0, truncated: false };
+  const expanded = await expand(steps, load, 0, new Set(), null, null, report);
+  return { steps: expanded, ...report };
+}
+
 async function expand(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
   depth: number,
   path: Set<string>,
   from: string | null,
+  inherited: string | null,
   report: { modules: string[]; depth: number; truncated: boolean },
 ): Promise<ExpandedStep[]> {
   const out: ExpandedStep[] = [];
@@ -79,6 +125,7 @@ async function expand(
 
   for (const step of steps) {
     const command = str(step["command"]);
+    const own = typeof step["condition"] === "string" ? step["condition"] : null;
     if (command !== "execute") {
       const target = step["target"];
       out.push({
@@ -87,7 +134,7 @@ async function expand(
         target: Array.isArray(target) ? JSON.stringify(target) : str(target),
         value: str(step["value"]),
         variableName: str(step["variableName"]),
-        condition: typeof step["condition"] === "string" ? step["condition"] : null,
+        condition: andConditions(inherited, own),
         optional: step["optional"] === true,
         fromModule: from,
       });
@@ -109,7 +156,15 @@ async function expand(
     const module = await load(id);
     if (!report.modules.includes(module.name)) report.modules.push(module.name);
     out.push(
-      ...(await expand(module.steps, load, depth + 1, new Set([...path, id]), module.name, report)),
+      ...(await expand(
+        module.steps,
+        load,
+        depth + 1,
+        new Set([...path, id]),
+        module.name,
+        andConditions(inherited, own),
+        report,
+      )),
     );
   }
   return out;
@@ -203,6 +258,8 @@ export interface PlannedStep {
   command: string;
   target: string;
   fromModule?: string;
+  /** Present when the step runs conditionally, inherited conditions included. */
+  condition?: string;
 }
 
 export interface ValidationReport {
@@ -341,13 +398,14 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     configSource = viewport || browser ? "caller override" : "Ghost Inspector defaults";
   }
 
-  const expansion = { modules: [] as string[], depth: 0, truncated: false };
-  const expanded = await expand(defined, load, 0, new Set(), null, expansion);
+  const expansion = await expandSteps(defined, load);
+  const expanded = expansion.steps;
   const { steps: toRun, guard } = applyGuard(expanded);
 
   const plan: PlannedStep[] = toRun.map((s, sequence) => {
     const entry: PlannedStep = { sequence, command: s.command, target: s.target };
     if (s.fromModule) entry.fromModule = s.fromModule;
+    if (s.condition) entry.condition = s.condition;
     return entry;
   });
 

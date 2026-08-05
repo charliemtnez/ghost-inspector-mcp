@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { applyGuard, findSubmit } from "../dist/validate.js";
+import { andConditions, applyGuard, expandSteps, findSubmit } from "../dist/validate.js";
 
 const S = (command, target = "", value = "", fromModule = null) => ({
   command, target, value, variableName: "", condition: null, optional: false, fromModule,
@@ -114,4 +114,66 @@ test("everything after the submit is dropped, not just the submit", () => {
   const steps = [S("click", SUBMIT), S("assertTextPresent", "body", "Thanks"), S("click", "#next")];
   const { guard } = applyGuard(steps);
   assert.equal(guard.droppedSteps, 3);
+});
+
+// Ghost Inspector ANDs an import step's condition with the conditions of the
+// steps it imports, accumulating at every level. An expansion that drops it
+// validates steps the real test skips, and reports failures that do not exist.
+
+test("a condition on an import step gates every step it imports", async () => {
+  const load = async (id) => ({
+    name: id,
+    steps:
+      id === "mod"
+        ? [{ command: "assign", target: "#n", value: "J", condition: "return inner();" }]
+        : [],
+  });
+  const { steps } = await expandSteps(
+    [{ command: "execute", value: "mod", condition: "return outer();" }],
+    load,
+  );
+  assert.equal(steps.length, 1);
+  assert.match(steps[0].condition, /outer\(\)/, "the import's own condition must survive inlining");
+  assert.match(steps[0].condition, /inner\(\)/, "without losing the step's own");
+});
+
+test("conditions accumulate through nested imports", async () => {
+  const load = async (id) => ({
+    name: id,
+    steps:
+      id === "outerMod"
+        ? [{ command: "execute", value: "innerMod", condition: "return b();" }]
+        : [{ command: "assign", target: "#x", value: "1" }],
+  });
+  const { steps } = await expandSteps(
+    [{ command: "execute", value: "outerMod", condition: "return a();" }],
+    load,
+  );
+  assert.equal(steps.length, 1);
+  assert.match(steps[0].condition, /a\(\)/);
+  assert.match(steps[0].condition, /b\(\)/);
+});
+
+test("an unconditional chain stays unconditional", async () => {
+  const load = async () => ({
+    name: "m",
+    steps: [{ command: "assign", target: "#x", value: "1" }],
+  });
+  const { steps } = await expandSteps([{ command: "execute", value: "m" }], load);
+  assert.equal(steps[0].condition, null, "no invented condition on a plain chain");
+});
+
+test("the combined condition evaluates as the AND of its sides", () => {
+  // Conditions are scripts with an explicit return, like eval. Executing the
+  // combination the way a page would is the only proof the wrapping is right.
+  assert.equal(new Function(andConditions("return 1 === 1;", "return 2 === 3;"))(), false);
+  assert.equal(new Function(andConditions("return 1 === 1;", "return 3 === 3;"))(), true);
+});
+
+test("andConditions keeps a lone side verbatim", () => {
+  // Wrapping a single script would change nothing but readability — the
+  // stored condition should stay recognisable to whoever wrote it.
+  assert.equal(andConditions(null, "return x;"), "return x;");
+  assert.equal(andConditions("return y;", null), "return y;");
+  assert.equal(andConditions(null, null), null);
 });
