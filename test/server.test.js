@@ -86,6 +86,23 @@ test("the write gate opens only for an exact true", async () => {
   assert.deepEqual(names, [...WRITE, ...READ_ONLY].sort());
 });
 
+test("every tool declares the posture a client's permission model reads", async () => {
+  const { tools } = await listTools({ GHOST_INSPECTOR_ALLOW_WRITES: "true" });
+  for (const tool of tools) {
+    assert.ok(tool.annotations, `${tool.name} must ship annotations`);
+    if (READ_ONLY.includes(tool.name) && tool.name !== "gi_validate_test") {
+      assert.equal(tool.annotations.readOnlyHint, true, `${tool.name} is read-only`);
+    } else {
+      // gi_validate_test drives a real browser; the write tools write.
+      assert.equal(tool.annotations.readOnlyHint, false, `${tool.name} has side effects`);
+    }
+  }
+  const update = tools.find((t) => t.name === "gi_update_test");
+  assert.equal(update.annotations.destructiveHint, true, "an unversioned overwrite is destructive");
+  const move = tools.find((t) => t.name === "gi_move_suite");
+  assert.equal(move.annotations.destructiveHint, false, "a move is the one reversible write");
+});
+
 test("the write gate stays shut for anything an operator might type instead", async () => {
   // "1" and "yes" look like consent and are not. Getting this wrong exposes a
   // permanent, unversioned overwrite to any agent that asks.

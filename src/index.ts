@@ -44,6 +44,12 @@ interface Organization {
   name?: string;
 }
 
+// Annotations state the same posture the server enforces, in the vocabulary
+// clients use to decide permission prompts. gi_validate_test is deliberately
+// NOT read-only: it changes nothing in the account, but it drives a real
+// browser against a real URL, and that is a side effect.
+const READ_ONLY = { readOnlyHint: true, openWorldHint: true };
+
 server.registerTool(
   "gi_whoami",
   {
@@ -54,6 +60,7 @@ server.registerTool(
       "each organization's id — export the one you want as " +
       "GHOST_INSPECTOR_ORG_ID to enable on-demand validation runs.",
     inputSchema: {},
+    annotations: READ_ONLY,
   },
   async () =>
     safeText(async () => {
@@ -93,6 +100,7 @@ server.registerTool(
         .optional()
         .describe("List only suites with at least one failing test. Totals stay account-wide."),
     },
+    annotations: READ_ONLY,
   },
   async ({ folder, failingOnly }) => safeText(() => getInventory({ folder, failingOnly })),
 );
@@ -131,6 +139,7 @@ server.registerTool(
           "Case-insensitive substring of a module name. Narrows the listing and names every importer instead of capping the list.",
         ),
     },
+    annotations: READ_ONLY,
   },
   async ({ module }) => safeText(() => getModuleUsage({ module })),
 );
@@ -166,6 +175,7 @@ server.registerTool(
           "List the passing-but-unverified tests too. Off by default because it is the long bucket; the count is always reported.",
         ),
     },
+    annotations: READ_ONLY,
   },
   async ({ includePasses }) => safeText(() => getStaleTests({ includePasses })),
 );
@@ -245,6 +255,10 @@ server.registerTool(
           "Report exactly what would run — after modules are inlined and the submit guard applied — and stop. Nothing is sent to Ghost Inspector, no browser starts, no page loads, and no organization id is needed. Use it first on anything that touches production.",
         ),
     },
+    // Not read-only: nothing in the account changes, but a non-dry run drives
+    // a real browser against a real URL. Not destructive: it saves nothing
+    // and the guard keeps it from submitting.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
   async ({ testId, definition, viewport, browser, dryRun }) =>
     safeText(() =>
@@ -311,6 +325,8 @@ if (writesAllowed()) {
             "Proceed even though the chain changed after the last run. Only after verifying the current definition yourself; otherwise you may be overwriting someone else's fix.",
           ),
       },
+      // Destructive is the honest word: no version history, no recycle bin.
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
       safeText(() =>
@@ -347,6 +363,8 @@ if (writesAllowed()) {
           .string()
           .describe("The folder id you believe this suite is in right now. Refused if it is not."),
       },
+      // A move is the one reversible write, so it is not destructive.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ suiteId, folderId, expectedCurrentFolder }) =>
       safeText(() => moveSuite({ suiteId, folderId, expectedCurrentFolder })),
