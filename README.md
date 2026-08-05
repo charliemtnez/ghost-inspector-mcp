@@ -98,7 +98,7 @@ This server will **never**:
 
 ## Safety model
 
-**Read-only unless you opt in.** Mutating tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. If you have not opted in, nothing can be changed no matter what your agent is asked to do.
+**Read-only unless you opt in.** Mutating tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. If you have not opted in, nothing can be changed no matter what your agent is asked to do. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
 
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}/` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
@@ -130,19 +130,19 @@ npm run typecheck
 npm test          # builds first, then runs the suite
 ```
 
-108 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+118 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
 
 | File | What it pins |
 |---|---|
 | `config.test.js` | The write gate opens for an exact `true` and not for `1` or `yes`; the key is re-read every call so rotation works; `redact` strips both the query parameter and a bare occurrence |
-| `client.test.js` | Truthy is not `true`; an unknown date reads as never-executed, because erring the other way slips a live module into a prune list |
+| `client.test.js` | Truthy is not `true`; an unknown date reads as never-executed, because erring the other way slips a live module into a prune list; a stalled body download cannot outlive the request timeout |
 | `graph.test.js` | A cycle terminates; depth does not inflate on a level that adds nobody; hitting the documented nesting limit is reported rather than passed off as a total |
 | `inventory.test.js` | Every test lands in exactly one bucket; a module is never counted as failing; an empty suite still appears |
 | `modules.test.js` | The transitive radius exceeds the direct count; a cycle is a flag rather than an inflated number; a test that executes nothing is found |
 | `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
-| `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form |
+| `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form; an import's condition gates every step it imports instead of being dropped |
 | `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences |
-| `server.test.js` | The server starts, speaks the protocol, and the write gate holds end to end |
+| `server.test.js` | The server starts, speaks the protocol, the write gate holds end to end, and every tool's annotations state the posture the code enforces |
 
 `server.test.js` starts the real server over stdio, which is the only way to catch a registration or schema mistake. No API key is configured anywhere in the suite, so nothing reaches Ghost Inspector and the tests are safe to run against any machine.
 
