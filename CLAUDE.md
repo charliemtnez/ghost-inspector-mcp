@@ -67,6 +67,17 @@ Note: a per-user key still carries that user's permissions. If the user is an or
 
 Verified empirically. The official docs omit all of these.
 
+**Envelope and errors**
+- Every response is wrapped: `{"code": "SUCCESS", "data": ...}`, or `{"code": "ERROR", "errorType": "...", "message": "..."}`.
+- 🔴 **A failed call still returns `HTTP 200`.** Status alone tells you nothing; `code` is the authority. Confirmed live: a `GET` for a well-formed but nonexistent result id answers `200` with `{"code":"ERROR","errorType":"VALIDATION_ERROR","message":"Result not found"}`.
+- `errorType` is a machine-readable discriminator worth surfacing alongside `message` — "Result not found" alone does not distinguish a malformed id from an absent one from a purged one.
+- A genuinely missing endpoint answers `404` with an **HTML** body, not the envelope. That is the discriminator for "this route does not exist" versus "this id does not exist", and it is how the resource list below was checked.
+
+**Result endpoints** — verified live, because the wrong path here silently breaks every future execution feature.
+- `GET /results/{id}/` ✅ exists — this is what `pollResult` uses.
+- `GET /test-results/{id}/` 🔴 **does not exist** (404, HTML). Treat any note or doc that names a `test-results` resource as wrong.
+- `GET /suite-results/{id}/` ✅ exists.
+
 **Asynchrony**
 - `execute` and `on-demand/execute` return `HTTP 200` in ~0.2s with a **pending** record: `passing: null`, `executionTime: null`. Poll `GET /results/{id}/`. A browser run takes 20-70s.
 - 🔴 `passing: null` means *not finished*, not *failed*. Conflating them invents failures that do not exist.

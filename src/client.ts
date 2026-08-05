@@ -35,7 +35,13 @@ export class RunTimeoutError extends Error {
   }
 }
 
-type Envelope<T> = { code?: string; message?: string; data?: T };
+/**
+ * The uniform response wrapper. On failure `code` is `"ERROR"` and `errorType`
+ * carries a machine-readable discriminator (e.g. `VALIDATION_ERROR`) — worth
+ * surfacing, because "Result not found" alone does not say whether the id was
+ * malformed, absent, or purged.
+ */
+type Envelope<T> = { code?: string; errorType?: string; message?: string; data?: T };
 
 export interface RequestOptions {
   /** Extra query-string parameters. `apiKey` is added automatically. */
@@ -99,8 +105,9 @@ export async function request<T = unknown>(
   }
 
   if (!response.ok || payload.code === "ERROR") {
+    const detail = payload.message ?? `${endpoint} failed with HTTP ${response.status}`;
     throw new GhostInspectorError(
-      payload.message ?? `${endpoint} failed with HTTP ${response.status}`,
+      payload.errorType ? `${detail} [${payload.errorType}]` : detail,
       response.status,
     );
   }
