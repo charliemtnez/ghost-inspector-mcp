@@ -164,3 +164,20 @@ test("dateUpdated is ignored, since a write always moves it", () => {
   const after = { _id: "t", dateUpdated: "b", name: "n" };
   assert.equal(diffUntouched(before, after, []).length, 0);
 });
+
+test("a field that exists only after the write is reported", () => {
+  // Guard 4 walked the prior definition alone until 0.1.1, so a field the API
+  // added during the write was the one unexpected change it could not see —
+  // and "nothing else moved" would have been reported without being checked.
+  const before = { _id: "t", name: "n" };
+  const after = { _id: "t", name: "n", autoRetry: true };
+  const d = diffUntouched(before, after, ["name"]);
+  assert.deepEqual(d.map((x) => x.field), ["autoRetry"]);
+  assert.equal(d[0].stored, true);
+});
+
+test("a field that disappeared during the write is reported", () => {
+  const before = { _id: "t", name: "n", suite: "s1" };
+  const after = { _id: "t", name: "n" };
+  assert.deepEqual(diffUntouched(before, after, ["name"]).map((x) => x.field), ["suite"]);
+});
