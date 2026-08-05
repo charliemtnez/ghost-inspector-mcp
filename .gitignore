@@ -2,10 +2,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Credentials — never commit any of these
+# Credentials — never commit any of these.
+# Nothing here loads a .env; the key comes from the environment. These stay
+# ignored anyway, so a file created out of habit can never be committed.
 .env
 .env.*
-!.env.example
 *.key
 .gi-key
 secrets/
