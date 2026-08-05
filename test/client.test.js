@@ -1,11 +1,12 @@
 /**
- * The module predicates. Getting these wrong is the most destructive wrong
- * answer this server can give, so they are pinned case by case.
+ * The module predicates, and the one transport behaviour worth pinning.
+ * Getting the predicates wrong is the most destructive wrong answer this
+ * server can give, so they are pinned case by case.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { hasNeverExecuted, isModule } from "../dist/client.js";
+import { hasNeverExecuted, isModule, request } from "../dist/client.js";
 
 const EPOCH = "1970-01-01T00:00:00.000Z";
 
@@ -52,6 +53,36 @@ test("an absent or unreadable date counts as never executed", () => {
   assert.equal(hasNeverExecuted({ _id: "a" }), true);
   assert.equal(hasNeverExecuted({ _id: "a", dateExecutionFinished: null }), true);
   assert.equal(hasNeverExecuted({ _id: "a", dateExecutionFinished: "not-a-date" }), true);
+});
+
+test("a stalled body download cannot outlive the timeout", async () => {
+  // The window on GET /tests/ has to bound the ~440 KB body, not just the
+  // headers: clearing the timer at headers-received leaves the download with
+  // no timeout at all. The key is a placeholder and fetch is stubbed, so
+  // nothing leaves this machine.
+  process.env.GHOST_INSPECTOR_API_KEY = "placeholder-test-key";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (_url, init) =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      // Undici rejects an in-flight body read when the signal aborts; the
+      // stub must honour that, or this test would hang instead of failing.
+      text: () =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    });
+  try {
+    await assert.rejects(request("GET", "tests", { timeoutMs: 50 }), (error) => {
+      assert.equal(error.name, "GhostInspectorError");
+      assert.match(error.message, /timed out/, "must say it was time, not a server error");
+      return true;
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.GHOST_INSPECTOR_API_KEY;
+  }
 });
 
 test("the guarded ranking keeps live modules out of a prune list", () => {

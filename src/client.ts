@@ -72,9 +72,11 @@ export async function request<T = unknown>(
   }
   url.searchParams.set("apiKey", requireApiKey());
 
+  const timeoutMs = options.timeoutMs ?? 60_000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
+  let text: string;
   try {
     // Built conditionally: exactOptionalPropertyTypes rejects an explicit
     // `undefined` for headers/body.
@@ -84,14 +86,22 @@ export async function request<T = unknown>(
       init.body = JSON.stringify(options.body);
     }
     response = await fetch(url, init);
+    // Read inside the same window. `GET /tests/` downloads ~440 KB, so a
+    // stalled body must not outlive the timeout that bounded the headers.
+    text = await response.text();
   } catch (cause) {
+    if (controller.signal.aborted) {
+      throw new GhostInspectorError(
+        `Request to ${endpoint} timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+          `Retry, or pass a longer timeoutMs if this endpoint is just slow.`,
+      );
+    }
     const detail = cause instanceof Error ? cause.message : String(cause);
     throw new GhostInspectorError(`Request to ${endpoint} failed: ${detail}`);
   } finally {
     clearTimeout(timer);
   }
 
-  const text = await response.text();
   let payload: Envelope<T>;
   try {
     payload = JSON.parse(text) as Envelope<T>;
