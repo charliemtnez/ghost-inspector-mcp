@@ -1,7 +1,7 @@
 {
   "name": "ghost-inspector-mcp",
   "version": "0.1.0",
-  "description": "MCP server for the Ghost Inspector API \u2014 create, update and analyze end-to-end browser tests from any MCP-capable agent",
+  "description": "MCP server for the Ghost Inspector API \u2014 analyze, validate and safely update end-to-end browser tests from any MCP-capable agent",
   "license": "MIT",
   "author": "charliemtnez",
   "type": "module",

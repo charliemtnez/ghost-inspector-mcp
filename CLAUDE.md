@@ -1,6 +1,6 @@
 # ghost-inspector-mcp
 
-MCP server for the [Ghost Inspector](https://ghostinspector.com) REST API. Lets any MCP-capable agent (Claude, OpenAI, OpenCode, automations) **create, update and analyze** end-to-end browser tests without using the Ghost Inspector web UI.
+MCP server for the [Ghost Inspector](https://ghostinspector.com) REST API. Lets any MCP-capable agent (Claude, OpenAI, OpenCode, automations) **analyze, validate and safely update** end-to-end browser tests without using the Ghost Inspector web UI.
 
 > **This is a standalone, vendor-neutral tool.** It is not part of, and must not depend on, any consumer's project.
 
