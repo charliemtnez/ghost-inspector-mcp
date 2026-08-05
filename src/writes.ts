@@ -177,7 +177,10 @@ export function diffUntouched(
 ): FieldDiff[] {
   const out: FieldDiff[] = [];
   const ignore = new Set([...sentFields, "dateUpdated", "steps"]);
-  for (const key of Object.keys(before)) {
+  // Both sides, not just `before`: a field that exists only *after* the write
+  // is as much an unexpected change as one whose value moved, and iterating the
+  // prior definition alone can never see it appear.
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (ignore.has(key)) continue;
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
       out.push({ field: key, sent: "(not sent)", stored: after[key] });
