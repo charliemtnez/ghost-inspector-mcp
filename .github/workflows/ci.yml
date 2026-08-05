@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in engines, both active LTS lines, and current.
+        # A server distributed by npx runs on whatever Node the user has.
+        node: ["18", "20", "22", "24"]
+
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `npm test` builds first, then runs the unit tests and the integration
+      # test that starts the server and proves the write gate. Nothing here
+      # reaches Ghost Inspector: no API key is configured.
+      - name: Test
+        run: npm test
+
+  leak-audit:
+    runs-on: ubuntu-latest
+    name: no consumer data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # This repo is written as though already public. A leak scrubbed in a
+      # later commit is still in the history, so the whole history is scanned,
+      # not just the working tree.
+      - name: No account ids or credentials, anywhere in history
+        run: |
+          if git log -p --all | grep -inE '\b[0-9a-f]{24}\b'; then
+            echo "::error::a 24-character hex id reached the history"
+            exit 1
+          fi
+          if git log -p --all | grep -inE '(apikey|api_key)[=:][0-9a-f]{32,}'; then
+            echo "::error::something with the shape of a real API key reached the history"
+            exit 1
+          fi
+          echo "no account ids or credentials in history"
+
+      - name: Only placeholder identities in the tree
+        run: |
+          FOUND=$(grep -rohE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
+                    --include='*.ts' --include='*.js' --include='*.md' --include='*.json' . \
+                  | grep -v node_modules | sort -u | grep -v '@example\.com' || true)
+          if [ -n "$FOUND" ]; then
+            echo "::error::non-placeholder email address: $FOUND"
+            exit 1
+          fi
+          echo "only @example.com addresses present"
