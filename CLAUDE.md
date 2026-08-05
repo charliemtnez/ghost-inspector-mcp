@@ -118,7 +118,7 @@ Error messages follow the same rule: say what to do next, not just what went wro
 - Dependencies stay minimal. Every added dependency is a supply-chain liability for an artifact that runs with other people's API keys.
 - One function style per file. `const` by default, `let` only when reassigned, never `var`.
 - JSDoc on exported functions: the why, `@param`, `@return`, `@throws` where it applies.
-- Tool input schemas are declared with `zod` so the model gets validation errors it can act on.
+- Tool input schemas are declared with `zod` so the model gets validation errors it can act on. It is a direct dependency even while no tool takes arguments yet — authoring schemas means importing it, and importing a transitive dependency of the SDK instead would be relying on someone else's dependency graph. 🔴 **Keep it on `^4`.** The SDK accepts `^3.25 || ^4.0`, and zod changed its API across that major. Two zod copies in one tree make schema identity checks fail in ways that read as "the model sent bad arguments". One copy, pinned.
 
 ## Commands
 
@@ -140,6 +140,8 @@ npm run build && node dist/index.js
 | `GHOST_INSPECTOR_API_KEY` | yes | Per-user key from Account Settings → API Access |
 | `GHOST_INSPECTOR_ORG_ID` | for on-demand execution | Consumer's organization id — config, never hardcoded |
 | `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Registers the mutating tools when `true` |
+
+**Environment variables only — do not add `dotenv` or an `.env` file.** This ships as a global command with no project directory of its own, so a `.env` beside the source would not be read in the installed case anyway. More to the point, a second sanctioned place to keep the key is a second place to leak it, which is the opposite of this project's purpose. The documented path is `~/.gi-key` at `600` plus an export in the shell profile. An `.env.example` existed briefly and was removed for promising a mechanism nothing implemented; `.env*` stays in `.gitignore` so a file created out of habit can never be committed.
 
 ## Scope discipline
 
