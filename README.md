@@ -1,6 +1,6 @@
 # ghost-inspector-mcp
 
-[![CI](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/charliemtnez/ghost-inspector-mcp/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/ghost-inspector-mcp)](https://www.npmjs.com/package/ghost-inspector-mcp)
 
 An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https://ghostinspector.com) API, so you can work with end-to-end browser tests from whatever agent you already use — Claude, OpenAI, OpenCode, your own automation — instead of clicking through the web UI.
 
@@ -22,7 +22,7 @@ The two write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` 
 
 **Not included, on purpose.** Suite deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Test creation: Ghost Inspector documents no create endpoint, and this server does not guess at one — the documented path is `POST /tests/{id}/duplicate/` followed by an update, which needs a source test and so is a different operation than "create".
 
-**Not built.** Dating a regression back to its last green run: old results are purged, so there is a horizon past which the API simply cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool. Not published to npm yet either, so install from source.
+**Not built.** Dating a regression back to its last green run: old results are purged, so there is a horizon past which the API simply cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool.
 
 ## Why this exists
 
@@ -40,15 +40,19 @@ And a test whose steps are only `execute` calls into modules with no steps **run
 
 ## Install
 
-Requires Node 18+.
+Requires Node 18+. There is nothing to install ahead of time — your MCP client launches the server with:
+
+```bash
+npx -y ghost-inspector-mcp
+```
+
+To work on the server itself, clone and build instead:
 
 ```bash
 git clone https://github.com/charliemtnez/ghost-inspector-mcp.git
 cd ghost-inspector-mcp
 npm install && npm run build
 ```
-
-Once it is published, `npx -y ghost-inspector-mcp` will work instead. It does not yet.
 
 ## Configure
 
@@ -65,12 +69,12 @@ Configuration is environment variables only. There is deliberately no `.env` sup
 ### Claude Code
 
 ```bash
-claude mcp add ghost-inspector --scope user -- node /absolute/path/to/ghost-inspector-mcp/dist/index.js
+claude mcp add ghost-inspector --scope user -- npx -y ghost-inspector-mcp
 ```
 
 ### Any other MCP client
 
-Point it at `node <path>/dist/index.js` over stdio and pass the key through the environment.
+Point it at `npx -y ghost-inspector-mcp` over stdio — or at `node <path>/dist/index.js` from a clone — and pass the key through the environment.
 
 Either way the server inherits the environment of the process that launches your client, so exporting the key in your shell profile is enough — you never have to put it in a config file.
 
