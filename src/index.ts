@@ -61,7 +61,9 @@ server.registerTool(
 // Write tools are registered here, behind writesAllowed(). Each one must:
 //   1. walk the full `execute` chain comparing dateUpdated against the last run
 //      (a red test whose module was edited after its last run is stale, not
-//      broken — overwriting it destroys someone else's fix),
+//      broken — overwriting it destroys someone else's fix). Imports nest up to
+//      10 levels, so cap the depth at 10 and detect cycles; bound the breadth
+//      too, because the fan-out multiplies against an undisclosed rate limit,
 //   2. return the complete prior definition as the caller's rollback,
 //   3. apply the change,
 //   4. re-GET and diff against what was sent.

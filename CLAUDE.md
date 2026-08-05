@@ -83,6 +83,16 @@ Verified empirically. The official docs omit all of these.
 - A date of `1970-01-01` is the "never executed" sentinel, not corrupt data.
 - Old results are purged. An old failure may be undiagnosable from the API.
 
+**Modules** — a module is a test whose steps other tests import. It is Ghost Inspector's only unit of reuse: the equivalent of a function.
+
+- The UI calls the step **"Import steps from test"**; the API calls the command **`execute`**. Same thing under two names — a model that has read the vendor docs will look for the wrong one.
+- A module is a test with **`importOnly: true`** (UI: *Settings → Modularization → "Import Only"*). That flag prevents the test from running **directly or as part of a suite**, replaces its passing/failing status with the literal label `Import Only`, and **deletes its stored results**.
+- 🔴 **Therefore every module is permanently "never executed": no results, `passing` not a boolean, last-run date at the `1970-01-01` sentinel.** Any aggregation that ranks by last-run date, or that reads "not passing" as "failing", will report every module in the account as the deadest, most broken thing in it — and recommend deleting precisely the code the live tests share. **Staleness and health tools must exclude `importOnly` tests before ranking, always.** This is the single most destructive wrong answer this server can give.
+- Imports **nest up to 10 levels**. A `dateUpdated` chain walk therefore needs a hard depth cap of 10 *and* cycle detection — and 10 levels of fan-out collides with the request-count ceiling above, so bound the breadth too.
+- **No scope isolation.** Imported steps are spliced in before execution, not run in a separate scope or browser, and the imported test's `startUrl` is **not** visited. A module cannot assume where it starts; its caller decides. This is also why `eval` globals cross the module boundary.
+- A `condition` on an import step is **AND-ed with the conditions of the steps it imports**, accumulating at every level. Adding one condition to a module call silently gates everything beneath it, recursively.
+- `importOnly` arrives in the cheap `GET /tests/` listing, so modules can be identified without paying the per-test `steps` fetch. Only the importer side of a reverse index costs N requests.
+
 **Writes**
 - `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**.
 - `POST /suites/{id}/` accepts `folder` (undocumented) and moves the suite with its tests. Reversible.
