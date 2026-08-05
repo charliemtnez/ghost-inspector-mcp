@@ -105,6 +105,10 @@ This server will **never**:
 
 **Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since — a refusal tells you the current value so the retry is one step. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed.
 
+That token narrows the window rather than closing it. Ghost Inspector has no compare-and-swap, so the check is read-then-write on the client side: two writers who both read before either wrote will both pass. It catches acting on a copy you read minutes or days ago, which is the realistic case, not a genuine race.
+
+All four guards are verified against a live account, on a disposable clone that was created, written to, and deleted — the account was byte-identical afterward.
+
 **Validation will not submit anything.** `gi_validate_test` uses on-demand execution, which runs a definition and discards it, so nothing in your account changes. But it drives a real browser against a real URL, so two guards apply and neither can be turned off:
 
 1. **Modules are inlined before anything is inspected.** A test whose steps are only `execute` calls hides its submit click inside a module, and guarding the definition as written would see nothing. Measured on a real account: of eight such tests, five would have posted a live form.

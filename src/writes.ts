@@ -21,6 +21,11 @@
  * has moved since. A confirmation flag can be talked past by a persuaded model;
  * a timestamp it has to have actually read cannot be guessed.
  *
+ * ⚠️ The token narrows the window; it cannot close it. Ghost Inspector has no
+ * compare-and-swap, so the check is read-then-write on this side: two writers
+ * who both read before either wrote will both pass. It catches the realistic
+ * case — acting on a copy read minutes or days ago — not a genuine race.
+ *
  * Suite deletion is never exposed. `DELETE /suites/{id}/` cascades to every test
  * in the suite with no undo, and that blast radius does not belong behind an
  * agent. It stays a deliberate `curl` by someone who knows what they are doing.
@@ -37,6 +42,27 @@ import { collectChainIds, type Steps } from "./graph.js";
 
 /** Step fields that define behaviour. Anything else is presentation. */
 const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional"] as const;
+
+/**
+ * Ghost Inspector normalises steps on write: it fills `condition: null`,
+ * `optional: false`, `private: false` and a `sequence` on everything it stores.
+ * So a naive round-trip comparison reports a difference on every step that
+ * omitted a field, and verification screams about a write that landed perfectly.
+ * Both sides get normalised to the stored shape before being compared.
+ */
+function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
+  const text = (v: unknown): string => (typeof v === "string" ? v : "");
+  const target = step["target"];
+  return {
+    command: text(step["command"]),
+    // A target may be an array of fallback selectors, tried in order.
+    target: Array.isArray(target) ? JSON.stringify(target) : text(target),
+    value: text(step["value"]),
+    variableName: text(step["variableName"]),
+    condition: text(step["condition"]) === "" ? null : text(step["condition"]),
+    optional: step["optional"] === true,
+  };
+}
 
 export interface ChainChange {
   name: string;
@@ -131,13 +157,12 @@ export function diffSteps(sent: Steps, stored: Steps): FieldDiff[] {
   if (sent.length !== stored.length) {
     out.push({ field: "steps.length", sent: sent.length, stored: stored.length });
   }
-  const norm = (v: unknown): unknown => (v === undefined || v === null || v === "" ? null : v);
   for (let i = 0; i < Math.min(sent.length, stored.length); i += 1) {
+    const a = normalizeStep(sent[i] ?? {});
+    const b = normalizeStep(stored[i] ?? {});
     for (const field of STEP_FIELDS) {
-      const a = norm(sent[i]?.[field]);
-      const b = norm(stored[i]?.[field]);
-      if (JSON.stringify(a) !== JSON.stringify(b)) {
-        out.push({ field: `steps[${i}].${field}`, sent: a, stored: b });
+      if (JSON.stringify(a[field]) !== JSON.stringify(b[field])) {
+        out.push({ field: `steps[${i}].${field}`, sent: a[field], stored: b[field] });
       }
     }
   }

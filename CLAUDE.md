@@ -132,6 +132,9 @@ Verified empirically. The official docs omit all of these.
 - `POST /tests/{id}/duplicate/` accepts GET or POST. It is also the safe way to learn a write contract: experiment on the clone, verify, apply to the real test, delete the clone.
 - **Writes take a concurrency token, not a confirmation flag.** The caller states the `dateUpdated` it believes is current and the write is refused if the record moved. A boolean "yes I'm sure" is exactly what a persuaded model will set; a timestamp it must have actually read is not guessable. Put the current value in the refusal so the retry is one step.
 - **Guard 4 has two halves.** Diff what was sent against what is stored, *and* diff every field that was not sent against the backup. The partial-update-preserves-everything behaviour above is undocumented, so verify it on every write rather than trusting it.
+- 🔴 **Ghost Inspector normalises steps on write.** It fills `condition: null`, `optional: false`, `private: false` and a `sequence` on everything it stores. A naive round-trip comparison therefore reports a difference on every step that omitted a field, and verification screams about a write that landed perfectly. Normalise **both sides** to the stored shape before diffing. Verified live: three sent steps produced three phantom `optional` diffs until the sent side was defaulted.
+- `dateUpdated` **is** bumped by a write, unlike by an execution. That is what makes it usable as a concurrency token.
+- ⚠️ **The token narrows the race window, it does not close it.** There is no compare-and-swap, so the check is read-then-write client side: two writers who both read before either wrote will both pass. It catches acting on a copy read minutes or days ago — the realistic case — not a genuine concurrent race. Say that rather than implying stronger guarantees.
 
 ## Design principle: tool descriptions are the product
 
