@@ -122,6 +122,44 @@ export function walk(start: string, edges: ReadonlyMap<string, Iterable<string>>
   return { ids, depth, truncated };
 }
 
+/**
+ * Collects every module id reachable from one test, following `execute` steps.
+ *
+ * Loads only what the chain touches, so a single test costs a handful of
+ * requests rather than the whole-account scan. Cycle-safe and capped at the
+ * documented nesting limit, reporting when the cap cut the walk short — a
+ * truncated chain means an incomplete answer, never a clean one.
+ *
+ * @param rootId Test to walk from.
+ * @param loadSteps Reads one test's steps by id.
+ * @returns Reachable module ids and whether the walk was cut short.
+ */
+export async function collectChainIds(
+  rootId: string,
+  loadSteps: (id: string) => Promise<Steps>,
+): Promise<{ ids: string[]; truncated: boolean }> {
+  const seen = new Set<string>();
+  let truncated = false;
+
+  const visit = async (id: string, depth: number, path: Set<string>): Promise<void> => {
+    if (depth >= DOCUMENTED_MAX_DEPTH) {
+      truncated = true;
+      return;
+    }
+    for (const next of executedIds(await loadSteps(id))) {
+      if (path.has(next)) {
+        truncated = true;
+        continue;
+      }
+      if (!seen.has(next)) seen.add(next);
+      await visit(next, depth + 1, new Set([...path, next]));
+    }
+  };
+
+  await visit(rootId, 0, new Set([rootId]));
+  return { ids: [...seen], truncated };
+}
+
 /** Runs `fn` over `items` with at most `limit` in flight, preserving order. */
 async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);

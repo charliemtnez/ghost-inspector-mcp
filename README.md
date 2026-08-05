@@ -13,10 +13,12 @@ Two tools are implemented:
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds unused modules, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
 | `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
 | `gi_validate_test` | no | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Inlines modules first, then truncates at the first step that could submit a form. `dryRun` shows exactly what would run without starting a browser. |
+| `gi_update_test` | **yes** | Replaces a test's steps and/or renames it, behind four guards. Opt-in only. |
+| `gi_move_suite` | **yes** | Moves a suite with its tests to another folder. Reversible; returns the prior folder. Opt-in only. |
 
-Enough to survey an account, know what an edit would touch, tell a real failure from an out-of-date one, and check a selector chain before saving it. **You cannot yet** change anything.
+The two write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`.
 
-Planned: the guarded create/update path.
+**Not included, on purpose.** Suite deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Test creation: Ghost Inspector documents no create endpoint, and this server does not guess at one — the documented path is `POST /tests/{id}/duplicate/` followed by an update, which needs a source test and so is a different operation than "create".
 
 Not published to npm yet, so install from source.
 
@@ -94,14 +96,14 @@ This server will **never**:
 
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
-The remaining points describe how the write path is specified to behave. **None of it is implemented yet** — the guards are the reason the write tools are not simply shipped.
+**Writes are guarded.** Every mutating tool performs these four in order, and none can be turned off:
 
-Every mutating tool will, without exception:
-
-1. compare `dateUpdated` across the whole `execute` chain against the last run — a red test whose module was edited *after* its last run is **stale, not broken**, and overwriting it destroys a colleague's fix. Imports nest up to ten levels, so the walk is bounded and detects cycles;
-2. return the complete prior definition, which is your rollback;
+1. compare `dateUpdated` across the whole `execute` chain against the last run — a red test whose module was edited *after* its last run is **stale, not broken**, and a fix diagnosed from that failure is diagnosed from a version that no longer exists. Imports nest up to ten levels, so the walk is bounded and detects cycles. On a real account this refused a test whose last run was July 2024 and whose definition was edited eighteen days later: still red on the dashboard two years on;
+2. return the complete prior definition — on refusals too. Ghost Inspector keeps no version history of steps, so that object **is** your rollback;
 3. apply the change;
-4. re-read and diff against what was sent, because `HTTP 200` does not prove the write landed as intended.
+4. re-read and diff twice over: that what was sent landed exactly, and that every field you did not send is untouched. `HTTP 200` proves neither.
+
+**Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since — a refusal tells you the current value so the retry is one step. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed.
 
 **Validation will not submit anything.** `gi_validate_test` uses on-demand execution, which runs a definition and discards it, so nothing in your account changes. But it drives a real browser against a real URL, so two guards apply and neither can be turned off:
 

@@ -13,10 +13,12 @@ import { z } from "zod";
 
 import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
+import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
+import { moveSuite, updateTest } from "./writes.js";
 
 const server = new McpServer({
   name: "ghost-inspector",
@@ -266,7 +268,96 @@ server.registerTool(
 //   3. apply the change,
 //   4. re-GET and diff against what was sent.
 if (writesAllowed()) {
-  // TODO(phase-1): validate_test, create_test, update_test, move_suite.
+  server.registerTool(
+    "gi_update_test",
+    {
+      title: "Ghost Inspector: update a test, behind four guards",
+      description:
+        "Replaces a test's steps and/or renames it. 🔴 Ghost Inspector keeps NO " +
+        "version history of steps and no recycle bin, so this is permanent.\n\n" +
+        "Four guards run on every call and none can be turned off. (1) The whole " +
+        "`execute` chain's `dateUpdated` is compared against the test's last run; " +
+        "if anything changed after it, the test is stale and the call is refused, " +
+        "because a fix diagnosed from a failure that describes a deleted version " +
+        "is diagnosed from nothing — and a colleague may already have fixed it. " +
+        "(2) The complete prior definition comes back as `backup`, on refusals " +
+        "too; it is the only rollback that exists, so keep it. (3) The change is " +
+        "applied. (4) The record is re-read and diffed, both that what was sent " +
+        "landed exactly and that every field you did not send is untouched — " +
+        "`HTTP 200` proves neither.\n\n" +
+        "`expectedDateUpdated` is required: state the `dateUpdated` you believe is " +
+        "current, and the write is refused if the record has moved since. Read the " +
+        "test first; a refusal tells you the current value so a retry is one step.\n\n" +
+        "Before overwriting a red test, prefer gi_validate_test, which runs the " +
+        "current definition without saving and without submitting a form. If the " +
+        "staleness guard trips and you have genuinely verified the current state, " +
+        "`confirmStaleDiagnosis` proceeds — read what the refusal says first.",
+      inputSchema: {
+        testId: z.string().describe("Test to change."),
+        expectedDateUpdated: z
+          .string()
+          .describe(
+            "The dateUpdated you read from this test. Proof you have seen its current state; the write is refused if it no longer matches.",
+          ),
+        steps: z
+          .array(STEP_SCHEMA)
+          .optional()
+          .describe("Replacement step list, in order. Replaces the whole array — send every step you want kept."),
+        name: z.string().optional().describe("New name. Renaming does not move the test or break importers, which reference it by id."),
+        confirmStaleDiagnosis: z
+          .boolean()
+          .optional()
+          .describe(
+            "Proceed even though the chain changed after the last run. Only after verifying the current definition yourself; otherwise you may be overwriting someone else's fix.",
+          ),
+      },
+    },
+    async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
+      safeText(() =>
+        updateTest({
+          testId,
+          expectedDateUpdated,
+          steps: steps as Steps | undefined,
+          name,
+          confirmStaleDiagnosis,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "gi_move_suite",
+    {
+      title: "Ghost Inspector: move a suite to another folder",
+      description:
+        "Moves a suite, with all of its tests, into another folder. Reversible — " +
+        "unlike everything else on the write path — and the response carries " +
+        "`previousFolder` so the undo is one call.\n\n" +
+        "`expectedCurrentFolder` is required: state the folder you believe the " +
+        "suite is in, and the move is refused if it is somewhere else, which is " +
+        "the case where you are about to move the wrong suite. The result is " +
+        "verified by re-reading: the folder must have changed and `testCount` must " +
+        "be identical, since a move should never detach a test.\n\n" +
+        "Note that `DELETE /folders/{id}/` does not exist, so a folder left empty " +
+        "by a move can only be removed from the web UI. Folder names have to be " +
+        "right the first time.",
+      inputSchema: {
+        suiteId: z.string().describe("Suite to move."),
+        folderId: z.string().describe("Destination folder id."),
+        expectedCurrentFolder: z
+          .string()
+          .describe("The folder id you believe this suite is in right now. Refused if it is not."),
+      },
+    },
+    async ({ suiteId, folderId, expectedCurrentFolder }) =>
+      safeText(() => moveSuite({ suiteId, folderId, expectedCurrentFolder })),
+  );
+
+  // Deliberately absent:
+  //   · suite deletion — DELETE /suites/{id}/ cascades to every test with no undo.
+  //   · test creation — Ghost Inspector documents no create endpoint. The
+  //     documented path is POST /tests/{id}/duplicate/ followed by an update,
+  //     which needs a source test, so it is a different tool than "create" and
+  //     is not guessed at here.
 }
 
 const transport = new StdioServerTransport();

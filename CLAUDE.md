@@ -128,6 +128,10 @@ Verified empirically. The official docs omit all of these.
 - `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**.
 - `POST /suites/{id}/` accepts `folder` (undocumented) and moves the suite with its tests. Reversible.
 - `POST /folders/` creates. **`DELETE /folders/{id}/` does not exist** (404, HTML body) — an empty folder can only be removed from the UI, so folder names must be right the first time.
+- 🔴 **There is no documented endpoint for creating a test.** Verified against the vendor's own API reference, which documents update, duplicate and delete but no create. Do not guess a route: the documented way to get a new test is `POST /tests/{id}/duplicate/` (returns a copy in the same suite, name suffixed `(Copy)`) followed by an update. That needs a source test, so it is not the same operation as "create" and must not be presented as one.
+- `POST /tests/{id}/duplicate/` accepts GET or POST. It is also the safe way to learn a write contract: experiment on the clone, verify, apply to the real test, delete the clone.
+- **Writes take a concurrency token, not a confirmation flag.** The caller states the `dateUpdated` it believes is current and the write is refused if the record moved. A boolean "yes I'm sure" is exactly what a persuaded model will set; a timestamp it must have actually read is not guessable. Put the current value in the refusal so the retry is one step.
+- **Guard 4 has two halves.** Diff what was sent against what is stored, *and* diff every field that was not sent against the backup. The partial-update-preserves-everything behaviour above is undocumented, so verify it on every write rather than trusting it.
 
 ## Design principle: tool descriptions are the product
 
