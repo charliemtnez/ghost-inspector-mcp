@@ -110,6 +110,11 @@ Verified empirically. The official docs omit all of these.
 - **No scope isolation.** Imported steps are spliced in before execution, not run in a separate scope or browser, and the imported test's `startUrl` is **not** visited. A module cannot assume where it starts; its caller decides. This is also why `eval` globals cross the module boundary.
 - A `condition` on an import step is **AND-ed with the conditions of the steps it imports**, accumulating at every level. Adding one condition to a module call silently gates everything beneath it, recursively.
 - `importOnly` arrives in the cheap `GET /tests/` listing, so modules can be identified without paying the per-test `steps` fetch. Only the importer side of a reverse index costs N requests.
+- **An `execute` step names its module in `value`** — a 24-char hex test id. `target` is empty on these steps. That single field is the whole edge list of the dependency graph.
+- 🔴 **`importOnly` prevents a test being *run* directly; it does not stop others *importing* it.** So a normal, schedulable test can also be someone's module, running standalone and inside its importers at once — an edit changes both paths. Index whatever is imported, never whatever is flagged. Measured on a real account: 19 imported tests, only 14 flagged.
+- `test.links` is always `[]`. It looks like a shortcut to related resources and is not one.
+- Measured cost of the reverse index: ~80 ms per test request, so ~450 tests take **~7 s at concurrency 5**. Affordable, but keep the concurrency low — the rate limit has no published numbers.
+- 🔴 **A direct importer count understates risk.** Real chains observed: a module with 31 direct importers reaches 55 transitively, and one with a *single* direct importer reaches 22. Always report the transitive closure; anyone reading "1 importer" would treat that module as safe to edit.
 
 **Writes**
 - `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**.

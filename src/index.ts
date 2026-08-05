@@ -14,6 +14,7 @@ import { z } from "zod";
 import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
 import { getInventory } from "./inventory.js";
+import { getModuleUsage } from "./modules.js";
 
 const server = new McpServer({
   name: "ghost-inspector",
@@ -90,6 +91,38 @@ server.registerTool(
     },
   },
   async ({ folder, failingOnly }) => safeText(() => getInventory({ folder, failingOnly })),
+);
+
+server.registerTool(
+  "gi_module_usage",
+  {
+    title: "Ghost Inspector: who imports each module",
+    description:
+      "Answers the one question the API cannot: if I edit this module, which " +
+      "tests break? Builds the reverse index of `execute` steps — for every " +
+      "imported test, its direct importers and its full transitive blast radius " +
+      "through nested chains. Run this BEFORE editing any module.\n\n" +
+      "Also surfaces three things that only appear once the index exists: " +
+      "import-only tests nobody imports (dead, or a test that lost its caller " +
+      "and is silently not running); imported tests NOT flagged import-only, " +
+      "which run standalone *and* inside their importers, so an edit changes " +
+      "both paths; and execute steps pointing at ids that no longer exist.\n\n" +
+      "This is the expensive tool. `steps` is absent from the test listing, so " +
+      "it costs one request per test in the account — a few seconds for a few " +
+      "hundred tests, at deliberately low concurrency because the rate limit is " +
+      "undisclosed. Call it once and work from the result rather than per module. " +
+      "A definition that cannot be read is counted in `scanned.unreadable`, never " +
+      "skipped silently, because a missing definition understates a blast radius.",
+    inputSchema: {
+      module: z
+        .string()
+        .optional()
+        .describe(
+          "Case-insensitive substring of a module name. Narrows the listing and names every importer instead of capping the list.",
+        ),
+    },
+  },
+  async ({ module }) => safeText(() => getModuleUsage({ module })),
 );
 
 // Write tools are registered here, behind writesAllowed(). Each one must:
