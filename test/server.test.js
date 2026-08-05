@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -61,16 +62,28 @@ async function listTools(env = {}) {
   });
 
   const lines = out.trim().split("\n").filter(Boolean);
-  const listing = lines
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .find((m) => m?.id === 2);
+  const parsed = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+  const listing = parsed.find((m) => m?.id === 2);
   assert.ok(listing, `no tools/list response. exit=${code} stderr=${err.slice(0, 400)}`);
-  return { names: listing.result.tools.map((t) => t.name).sort(), tools: listing.result.tools };
+  return {
+    names: listing.result.tools.map((t) => t.name).sort(),
+    tools: listing.result.tools,
+    serverInfo: parsed.find((m) => m?.id === 1)?.result?.serverInfo,
+  };
 }
 
 test("the server starts and registers exactly the read-only surface", async () => {
   const { names } = await listTools();
   assert.deepEqual(names, READ_ONLY, "read-only by default, no exceptions");
+});
+
+test("the version on the wire is the package version, not a copy of it", async () => {
+  // A hardcoded copy drifts on the first release and misreports every one after.
+  const pkg = JSON.parse(
+    readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+  );
+  const { serverInfo } = await listTools();
+  assert.equal(serverInfo?.version, pkg.version);
 });
 
 test("every tool ships a description and a schema the model can read", async () => {

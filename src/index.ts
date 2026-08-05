@@ -7,6 +7,8 @@
  * version history and no recycle bin.
  */
 
+import { readFileSync } from "node:fs";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -20,9 +22,15 @@ import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
 import { moveSuite, updateTest } from "./writes.js";
 
+// The manifest ships beside dist/ in the npm package, so it is readable in
+// every installed layout. One source for the version; npm bumps it, this reads it.
+const { version } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as { version: string };
+
 const server = new McpServer({
   name: "ghost-inspector",
-  version: "0.1.0",
+  version,
 });
 
 /** Wraps a handler so failures come back as readable, key-free text. */
