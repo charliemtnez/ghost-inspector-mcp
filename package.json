@@ -1,0 +1,48 @@
+{
+  "name": "ghost-inspector-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Ghost Inspector API — create, update and analyze end-to-end browser tests from any MCP-capable agent",
+  "license": "MIT",
+  "author": "charliemtnez",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ghost-inspector-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ghost-inspector",
+    "e2e",
+    "testing",
+    "browser-testing",
+    "qa"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/charliemtnez/ghost-inspector-mcp.git"
+  }
+}

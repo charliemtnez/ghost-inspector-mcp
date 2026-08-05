@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Credentials — never commit any of these
+.env
+.env.*
+!.env.example
+*.key
+.gi-key
+secrets/
+
+# Local scratch: API dumps may contain organization IDs, hostnames and
+# test-data identities. Nothing from a real account belongs in this repo.
+scratch/
+tmp/
+*.local.json
+
+.DS_Store
+.idea/
+.vscode/
