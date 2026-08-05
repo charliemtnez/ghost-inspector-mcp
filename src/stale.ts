@@ -218,13 +218,6 @@ export function buildStaleReport(
     );
   }
 
-  const cap = <T>(list: T[]) => ({
-    shown: list.slice(0, FINDING_CAP),
-    omitted: Math.max(0, list.length - FINDING_CAP),
-  });
-  const genuine = cap(genuineFailures);
-  const unverified = cap(unverifiedPasses);
-
   return {
     scanned: { tests: tests.length, stepRequests: steps.size, unreadable: tests.length - steps.size },
     totals: {
@@ -241,10 +234,12 @@ export function buildStaleReport(
     // Never capped: this is the bucket the tool exists for, and a red test
     // hidden behind a "and 12 more" is the one that gets overwritten.
     staleFailures,
-    genuineFailures: genuine.shown,
-    genuineFailuresOmitted: genuine.omitted,
-    unverifiedPasses: unverified.shown,
-    unverifiedPassesOmitted: unverified.omitted,
+    // Uncapped. Trimming is presentation, applied at the boundary, so this
+    // function never reports an omission count it did not cause.
+    genuineFailures,
+    genuineFailuresOmitted: 0,
+    unverifiedPasses,
+    unverifiedPassesOmitted: 0,
     neverRun: neverRun.sort(),
   };
 }
@@ -269,12 +264,27 @@ export async function getStaleTests(options: StaleOptions = {}): Promise<StaleRe
 
   if (!options.includePasses) {
     report.unverifiedPasses = [];
-    report.unverifiedPassesOmitted = 0;
     if (report.totals.passingUnverified > 0) {
       report.notes.push(
         `The ${report.totals.passingUnverified} unverified pass(es) are counted above but not listed. Pass includePasses to see them.`,
       );
     }
+  } else if (report.unverifiedPasses.length > FINDING_CAP) {
+    report.unverifiedPassesOmitted = report.unverifiedPasses.length - FINDING_CAP;
+    report.unverifiedPasses = report.unverifiedPasses.slice(0, FINDING_CAP);
+    report.notes.push(
+      `Listing the first ${FINDING_CAP} of ${report.totals.passingUnverified} unverified passes. The count above is the total.`,
+    );
+  }
+
+  // staleFailures is deliberately never trimmed: a red test hidden behind an
+  // "and N more" is the one that gets overwritten.
+  if (report.genuineFailures.length > FINDING_CAP) {
+    report.genuineFailuresOmitted = report.genuineFailures.length - FINDING_CAP;
+    report.genuineFailures = report.genuineFailures.slice(0, FINDING_CAP);
+    report.notes.push(
+      `Listing the ${FINDING_CAP} oldest of ${report.totals.failingGenuine} genuine failures.`,
+    );
   }
   return report;
 }
