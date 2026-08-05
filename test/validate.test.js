@@ -26,6 +26,12 @@ test("a submit-ish class name is caught too", () => {
   assert.equal(findSubmit([S("click", "#form .submit-btn")]).index, 0);
 });
 
+test("a send-shaped target is caught, but not send inside a longer word", () => {
+  assert.equal(findSubmit([S("click", "#contact .send-message")]).index, 0);
+  assert.equal(findSubmit([S("click", ".btn-send")]).index, 0);
+  assert.equal(findSubmit([S("click", "#sendgrid-banner")]), null, "a word boundary is the whole point");
+});
+
 test("an Enter keypress is caught", () => {
   const hit = findSubmit([S("assign", "#q", "x"), S("keypress", "#q", "Enter")]);
   assert.equal(hit.index, 1);

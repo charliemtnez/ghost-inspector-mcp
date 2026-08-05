@@ -37,7 +37,7 @@ import { DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
  * toward false positives: wrongly stopping early costs a truncated validation
  * that says so, while missing one posts a real lead to production.
  */
-const SUBMIT_TARGET = /type\s*=\s*["']?submit|\bsubmit\b|\bbtn-send\b/i;
+const SUBMIT_TARGET = /type\s*=\s*["']?submit|\bsubmit\b|\bsend\b/i;
 
 /** Script bodies that can activate a control without a click step. */
 const SUBMIT_SCRIPT = /\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(/i;
