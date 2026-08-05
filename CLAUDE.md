@@ -100,6 +100,8 @@ Verified empirically. The official docs omit all of these.
 - `execute` steps nest modules, recursively. Results contain the **expanded** steps, so result step counts will not match definition step counts.
 - A date of `1970-01-01` is the "never executed" sentinel, not corrupt data.
 - Old results are purged. An old failure may be undiagnosable from the API.
+- **`dateUpdated` is not bumped by executing a test.** The whole stale-versus-broken comparison rests on this: if a run touched `dateUpdated`, every test would read as edited-after-its-run and the triage would return noise. Confirmed on a real account, where 14 failures sit at `dateUpdated` ≤ last run.
+- `dateUpdated` means *the record changed*, not *someone fixed it* — a rename or a suite move bumps it too. So the honest claim is "this result is out of date", never "this has been fixed".
 
 **Modules** — a module is a test whose steps other tests import. It is Ghost Inspector's only unit of reuse: the equivalent of a function.
 

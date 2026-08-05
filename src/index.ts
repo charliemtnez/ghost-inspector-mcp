@@ -15,6 +15,7 @@ import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
+import { getStaleTests } from "./stale.js";
 
 const server = new McpServer({
   name: "ghost-inspector",
@@ -123,6 +124,41 @@ server.registerTool(
     },
   },
   async ({ module }) => safeText(() => getModuleUsage({ module })),
+);
+
+server.registerTool(
+  "gi_stale_tests",
+  {
+    title: "Ghost Inspector: stale versus genuinely broken",
+    description:
+      "Call this BEFORE diagnosing or editing any red test. Splits failures into " +
+      "two piles by comparing the whole `execute` chain's `dateUpdated` against " +
+      "each test's last run.\n\n" +
+      "`staleFailures` are red tests whose definition or module chain changed " +
+      "AFTER the failing run. The failure describes a version that no longer " +
+      "exists — a colleague may already have fixed it and the test simply has not " +
+      "run again. Editing on top of one destroys their work, and Ghost Inspector " +
+      "keeps no version history of steps. One level deep is not enough here, " +
+      "because modules nest; the whole chain is walked.\n\n" +
+      "`genuineFailures` have had no change since the failing run, so the failure " +
+      "still describes the current definition. Start there, oldest first.\n\n" +
+      "🔴 Re-running is not free advice: many Ghost Inspector suites submit real " +
+      "forms against production. Confirm what a test does before triggering it.\n\n" +
+      "Also reports the case nobody looks for: passing tests whose chain changed " +
+      "after their last run, whose green result describes the old definition and " +
+      "proves nothing about the current one. Import-only modules are excluded " +
+      "rather than evaluated, since they have no results to compare against.\n\n" +
+      "Costs one request per test, a few seconds for a few hundred tests.",
+    inputSchema: {
+      includePasses: z
+        .boolean()
+        .optional()
+        .describe(
+          "List the passing-but-unverified tests too. Off by default because it is the long bucket; the count is always reported.",
+        ),
+    },
+  },
+  async ({ includePasses }) => safeText(() => getStaleTests({ includePasses })),
 );
 
 // Write tools are registered here, behind writesAllowed(). Each one must:

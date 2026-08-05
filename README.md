@@ -11,10 +11,11 @@ Two tools are implemented:
 | `gi_whoami` | no | Verifies your API key and lists the organizations it can reach, with their ids. Start here when something is misconfigured. |
 | `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds unused modules, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
+| `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
 
-Enough to survey an account and to know what an edit would touch. **You cannot yet** tell a genuinely broken test from a stale one, validate selectors, or change anything.
+Enough to survey an account, know what an edit would touch, and tell a real failure from an out-of-date one. **You cannot yet** validate selectors or change anything.
 
-Planned, in rough order: `gi_stale_tests`, `gi_date_regression`, `gi_validate_test`, then the guarded create/update path.
+Planned, in rough order: `gi_validate_test`, then the guarded create/update path.
 
 Not published to npm yet, so install from source.
 
