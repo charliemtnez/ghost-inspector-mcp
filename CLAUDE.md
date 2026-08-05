@@ -87,6 +87,12 @@ Verified empirically. The official docs omit all of these.
 - `eval` runs in the page's JS context; globals persist across steps.
 - `assign` **does** dispatch `input` and `change`, so it reaches reactive stores and exercises input masks and validation. Do not "work around" it.
 
+**Text assertions**
+- 🔴 **`assertTextPresent` requires a `target`.** With an empty target it fails as `Text not contained` even when the text is plainly on the page — so the error blames the page rather than the step. Verified live: no target fails, `body` and a specific element both pass. Scope to `body` at minimum.
+
+**Tests that assert nothing**
+- 🔴 A test whose steps are only `execute` calls into modules with no steps **runs zero steps and passes** — nothing can fail. The dashboard shows it green while it verifies nothing, which is worse than red because nobody investigates green. Emptying one shared module does this to every test that imports it: measured on a real account, one emptied module left **85 of 454 tests (19%) passing vacuously** for a week. `gi_module_usage` reports these as `vacuousTests`.
+
 **Listing the account** — measured on a ~450-test account, 2026-08-05.
 - 🔴 **There is no organization-scoped listing.** `/organizations/{id}/folders/`, `/suites/` and `/tests/` all 404 with an HTML body. The flat collections are the only way in.
 - `GET /folders/` ~1 KB · `GET /suites/` ~39 KB · `GET /tests/` ~438 KB (~112k tokens). Three requests describe an entire account, and **one `GET /tests/` beats one request per suite** against an undisclosed rate limit.

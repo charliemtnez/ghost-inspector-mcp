@@ -56,12 +56,26 @@ export interface UsageReport {
     importedNonModules: number;
     brokenReferences: number;
     cycles: number;
+    noOpModules: number;
+    vacuousTests: number;
     deepestChain: number;
   };
   notes: string[];
   modules: ModuleUsage[];
   /** Import-only tests nobody imports. Dead weight, or a broken wiring. */
   unusedModules: string[];
+  /**
+   * Imported tests that contribute no real step, directly or through their own
+   * chain. A module holding nothing but `execute` calls into empty modules is
+   * just as inert as a literally empty one, so both land here.
+   */
+  noOpModules: string[];
+  /**
+   * 🔴 Tests that execute no steps at all, directly or through their chain.
+   * They pass because nothing can fail, so the dashboard shows them green while
+   * they assert nothing. Worse than a red test, and invisible without this.
+   */
+  vacuousTests: string[];
   brokenReferences: BrokenReference[];
 }
 
@@ -108,6 +122,29 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
     .filter((m) => !importedIds.has(m._id))
     .map((m) => m.name ?? "(unnamed)")
     .sort();
+  // A step list with nothing but `execute` in it contributes no action of its
+  // own; what matters is whether the whole chain bottoms out in real steps.
+  const realSteps = (id: string): number =>
+    (steps.get(id) ?? []).filter((step) => step["command"] !== "execute").length;
+
+  /** Real steps reachable from `id`, including its own. */
+  const chainRealSteps = (id: string): number => {
+    let total = realSteps(id);
+    for (const reached of walk(id, forward).ids) total += realSteps(reached);
+    return total;
+  };
+
+  const noOpModules = targets
+    .filter((id) => chainRealSteps(id) === 0)
+    .map((id) => name.get(id) ?? id)
+    .sort();
+
+  const vacuousTests = tests
+    .filter((t) => t.importOnly !== true && steps.has(t._id))
+    .filter((t) => chainRealSteps(t._id) === 0)
+    .map((t) => t.name ?? "(unnamed)")
+    .sort();
+
   const importedNonModules = modules.filter((m) => !m.importOnly);
   const cyclic = modules.filter((m) => m.inCycle);
   const truncated = modules.filter((m) => m.depthTruncated);
@@ -131,6 +168,16 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
       `${broken.length} execute step(s) point at a test id that does not exist. Those steps cannot run.`,
     );
   }
+  if (vacuousTests.length > 0) {
+    notes.push(
+      `🔴 ${vacuousTests.length} test(s) execute NO steps at all — their own definition is only \`execute\` calls and the chain bottoms out in empty modules. They pass because nothing can fail, so the dashboard shows them green while they assert nothing. Emptying one shared module is enough to do this to every test that imports it.`,
+    );
+  }
+  if (noOpModules.length > 0) {
+    notes.push(
+      `${noOpModules.length} imported test(s) contribute no real step at all, so importing one adds nothing and its importers run less than they appear to.`,
+    );
+  }
   if (cyclic.length > 0) {
     notes.push(
       `${cyclic.length} module(s) transitively import themselves. A loop cannot resolve, so those chains do not run as intended — fix the cycle before trusting any test that reaches them.`,
@@ -151,11 +198,15 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
       importedNonModules: importedNonModules.length,
       brokenReferences: broken.length,
       cycles: cyclic.length,
+      noOpModules: noOpModules.length,
+      vacuousTests: vacuousTests.length,
       deepestChain: deepest,
     },
     notes,
     modules,
     unusedModules: unused,
+    noOpModules,
+    vacuousTests,
     brokenReferences: broken,
   };
 }

@@ -16,6 +16,7 @@ import { request } from "./client.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
+import { validateTest, type ValidateOptions } from "./validate.js";
 
 const server = new McpServer({
   name: "ghost-inspector",
@@ -108,6 +109,12 @@ server.registerTool(
       "and is silently not running); imported tests NOT flagged import-only, " +
       "which run standalone *and* inside their importers, so an edit changes " +
       "both paths; and execute steps pointing at ids that no longer exist.\n\n" +
+      "🔴 It also finds `vacuousTests`: tests that execute no steps at all, " +
+      "because their definition is only `execute` calls and the chain bottoms out " +
+      "in empty modules. Those pass — nothing can fail — so the dashboard shows " +
+      "them green while they assert nothing, which is worse than a red test and " +
+      "invisible any other way. Emptying one shared module does this to every " +
+      "test that imports it.\n\n" +
       "This is the expensive tool. `steps` is absent from the test listing, so " +
       "it costs one request per test in the account — a few seconds for a few " +
       "hundred tests, at deliberately low concurrency because the rate limit is " +
@@ -159,6 +166,94 @@ server.registerTool(
     },
   },
   async ({ includePasses }) => safeText(() => getStaleTests({ includePasses })),
+);
+
+const STEP_SCHEMA = z.object({
+  command: z
+    .string()
+    .describe(
+      "One of: assertElementNotPresent, assertElementNotVisible, assertElementPresent, assertElementVisible, assertEval, assertNotText, assertText, assertTextNotPresent, assertTextPresent, assign, click, dragAndDrop, eval, execute, exit, extract, extractEval, keypress, mouseOver, open, pause, refresh, screenshot, store.",
+    ),
+  target: z
+    .string()
+    .optional()
+    .describe(
+      "CSS selector. 🔴 REQUIRED by the text assertions: assertTextPresent with no target fails with \"Text not contained\" even when the text is plainly on the page, which reads as a product bug rather than a malformed step — scope it to body at minimum. Anchor to stable semantic attributes (data-*, name, id) and scope to a container id. Never :nth-of-type, never XPath matching visible copy, never long chains of presentational classes. A selector matching more than one element is a latent failure. Attribute selectors need brackets: [data-x=\"y\"], not data-x=\"y\", which is not valid CSS and never matched anything.",
+    ),
+  value: z
+    .string()
+    .optional()
+    .describe(
+      "For assign, the value to type — send it unformatted and assert the formatted result, so the test exercises the input mask instead of bypassing it. For eval and assertEval, JavaScript that MUST contain an explicit return; without one it evaluates to undefined and the assertion always fails, which looks like a product bug. For execute, the module's test id.",
+    ),
+  variableName: z.string().optional(),
+  condition: z
+    .string()
+    .optional()
+    .describe("JavaScript deciding whether the step runs. AND-ed with conditions inherited from enclosing imports."),
+  optional: z.boolean().optional().describe("Continue when this step fails."),
+});
+
+server.registerTool(
+  "gi_validate_test",
+  {
+    title: "Ghost Inspector: validate a definition without saving or submitting",
+    description:
+      "Runs a test definition through on-demand execution, which executes it and " +
+      "discards it — nothing in the account is created or changed. Use it to check " +
+      "that a selector chain still resolves before editing a test, and to check a " +
+      "definition you are authoring before saving it.\n\n" +
+      "🔴 It drives a real browser against a real URL, so it is an action with " +
+      "real-world effects even though nothing is saved. Two guards apply and " +
+      "neither can be turned off. Modules are inlined first, because a test whose " +
+      "steps are just `execute` calls hides its submit inside a module and " +
+      "guarding the definition as written would miss it. Then the run is " +
+      "truncated at the first step that could submit a form, and that step is " +
+      "replaced by an assertion on the same target — so the whole chain is " +
+      "verified, including that the submit control is reachable, without ever " +
+      "activating it. There is no way to make this tool submit; that stays a " +
+      "deliberate curl.\n\n" +
+      "For an existing test the suite's viewport and browser are replicated, " +
+      "because tests inherit those and a selector can resolve on desktop and fail " +
+      "on mobile. Read `ranAs.configSource` to see what was actually used.\n\n" +
+      "A browser run takes 20-100 seconds; the tool polls until it finishes. " +
+      "`passing: null` in the raw API means not finished, never failed.",
+    inputSchema: {
+      testId: z
+        .string()
+        .optional()
+        .describe("Existing test to validate. Its suite's viewport and browser are replicated."),
+      definition: z
+        .object({
+          name: z.string().optional(),
+          startUrl: z.string().describe("Where the run begins."),
+          steps: z.array(STEP_SCHEMA).describe("Steps in execution order."),
+        })
+        .optional()
+        .describe("Ad-hoc definition to validate instead of an existing test."),
+      viewport: z
+        .string()
+        .optional()
+        .describe('Override, e.g. "1280x800". Omit to replicate the suite\'s.'),
+      browser: z.string().optional().describe('Override, e.g. "chrome". Omit to replicate the suite\'s.'),
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe(
+          "Report exactly what would run — after modules are inlined and the submit guard applied — and stop. Nothing is sent to Ghost Inspector, no browser starts, no page loads, and no organization id is needed. Use it first on anything that touches production.",
+        ),
+    },
+  },
+  async ({ testId, definition, viewport, browser, dryRun }) =>
+    safeText(() =>
+      validateTest({
+        testId,
+        definition: definition as ValidateOptions["definition"],
+        viewport,
+        browser,
+        dryRun,
+      }),
+    ),
 );
 
 // Write tools are registered here, behind writesAllowed(). Each one must:

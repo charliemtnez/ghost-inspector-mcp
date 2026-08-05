@@ -12,10 +12,11 @@ Two tools are implemented:
 | `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds unused modules, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
 | `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
+| `gi_validate_test` | no | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Inlines modules first, then truncates at the first step that could submit a form. `dryRun` shows exactly what would run without starting a browser. |
 
-Enough to survey an account, know what an edit would touch, and tell a real failure from an out-of-date one. **You cannot yet** validate selectors or change anything.
+Enough to survey an account, know what an edit would touch, tell a real failure from an out-of-date one, and check a selector chain before saving it. **You cannot yet** change anything.
 
-Planned, in rough order: `gi_validate_test`, then the guarded create/update path.
+Planned: the guarded create/update path.
 
 Not published to npm yet, so install from source.
 
@@ -102,7 +103,12 @@ Every mutating tool will, without exception:
 3. apply the change;
 4. re-read and diff against what was sent, because `HTTP 200` does not prove the write landed as intended.
 
-**Validation will not touch production.** Test definitions can be validated with on-demand execution, which runs and discards without saving. Strip the submit step and the whole selector chain gets verified **without submitting a real form** — worth caring about, since plenty of Ghost Inspector suites submit live forms against production sites on a schedule.
+**Validation will not submit anything.** `gi_validate_test` uses on-demand execution, which runs a definition and discards it, so nothing in your account changes. But it drives a real browser against a real URL, so two guards apply and neither can be turned off:
+
+1. **Modules are inlined before anything is inspected.** A test whose steps are only `execute` calls hides its submit click inside a module, and guarding the definition as written would see nothing. Measured on a real account: of eight such tests, five would have posted a live form.
+2. **The run is truncated at the first step that could submit**, and that step becomes an assertion on the same target — so the chain is verified, including that the submit control is reachable, without activating it. On a 30-test sample the guard fired on 25.
+
+There is no option to make it submit; that stays a deliberate `curl`. Use `dryRun` first on anything touching production: it reports exactly what would run, inlined and guarded, without starting a browser or needing an organization id.
 
 ## Contributing
 
