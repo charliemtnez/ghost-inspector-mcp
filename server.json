@@ -1,0 +1,41 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.charliemtnez/ghost-inspector-mcp",
+  "description": "Analyze, validate and safely update Ghost Inspector end-to-end browser tests",
+  "version": "0.1.1",
+  "repository": {
+    "url": "https://github.com/charliemtnez/ghost-inspector-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "ghost-inspector-mcp",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "GHOST_INSPECTOR_API_KEY",
+          "description": "Your personal Ghost Inspector key, from Account Settings then API Access. Read fresh on every call, never written to disk, never echoed back.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "GHOST_INSPECTOR_ORG_ID",
+          "description": "Organization id. Needed only to execute a validation; read it from gi_whoami.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "GHOST_INSPECTOR_ALLOW_WRITES",
+          "description": "Set to exactly true to register the two mutating tools. Anything else keeps the server read-only.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
