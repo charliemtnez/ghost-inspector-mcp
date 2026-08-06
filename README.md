@@ -6,26 +6,42 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Fourteen tools, all of them always visible: nine that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Fourteen tools. Nine only read, four write, and one runs a test for real. **All of them are always listed** — the gated ones refuse when called without their opt-in rather than hiding, so nothing has to be inferred from an absent tool.
 
-| Tool | Writes? | What it does |
+The table is a map of the surface. Each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+
+**Understand an account**
+
+| Tool | Access | What it does |
 |---|---|---|
-| `gi_whoami` | no | Verifies your API key, lists the organizations it can reach with their ids, and reports whether writing is enabled. Start here when something is misconfigured, or when an agent tells you this server cannot modify anything. |
-| `gi_get_test` | no | One test's stored definition, identity and state — including the `dateUpdated` that `gi_update_test` requires as its concurrency token. Call it before composing any edit. |
-| `gi_test_result` | no | Why one test is red: the failing step, its error, the selectors it was *authored* with rather than just the one that resolved, and which test or module actually owns the step. Leads with a staleness verdict, because a result that predates a change is not evidence. |
-| `gi_vacuous_tests` | no | Green tests that prove nothing, in three separate classes: runs zero steps, runs steps but contains no assertion at all, and a shortlist whose lone final assertion may have been true before the test did anything. |
-| `gi_propose_repair` | no | Turns a diagnosis into a concrete proposal — the rewritten step, which test owns it, and the token to write it. Applies nothing, and refuses on a stale diagnosis. |
-| `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
-| `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds tests that **pass while executing no steps at all**, modules that contribute nothing, modules nobody imports, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
-| `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
-| `gi_validate_test` | no | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Inlines modules first, then truncates at the first step that could submit a form. `dryRun` shows exactly what would run without starting a browser. |
-| `gi_update_test` | **yes** | Replaces a test's steps and/or renames it, behind four guards and a concurrency token. |
-| `gi_move_suite` | **yes** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
-| `gi_create_suite` | **yes** | Creates an empty suite, in a folder if you name one. Refuses a same-named sibling unless you insist. |
-| `gi_run_test` | **runs** | Executes a test exactly as saved and waits for the verdict. Its own gate, separate from writes. A test that submits a form is refused unless you confirm per call. |
-| `gi_duplicate_test` | **yes** | Copies a test, places it in a suite and renames it in one call. **This is the only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
+| `gi_whoami` | read | Verifies your API key, lists the organizations it can reach with their ids, and reports which gates are open. Start here when something is misconfigured, or when an agent tells you this server cannot modify anything. |
+| `gi_inventory` | read | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
+| `gi_module_usage` | read | The reverse index of `execute` steps: for every imported test, who imports it directly and its full transitive blast radius. Also finds modules nobody imports, imported tests missing the import-only flag, broken references, and cycles. One request per test. |
+| `gi_get_test` | read | One test's stored definition, identity and state — including the `dateUpdated` that `gi_update_test` requires as its concurrency token. Call it before composing any edit. |
 
-Every tool is listed whether or not its gate is open. The four write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is — a refusal changes nothing and tells you which variable to set. `gi_whoami` reports both.
+**Find what is wrong**
+
+| Tool | Access | What it does |
+|---|---|---|
+| `gi_stale_tests` | read | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. One request per test. |
+| `gi_vacuous_tests` | read | Green tests that prove nothing, in three separate classes: runs zero steps; runs its steps but contains no assertion at all; or a shortlist whose lone final assertion may have been true before the test did anything. |
+| `gi_test_result` | read | Why one test is red: the failing step, its error, the selectors it was *authored* with rather than only the one that resolved, and which test or module actually owns the step. Leads with a staleness verdict, because a result that predates a change is not evidence. |
+
+**Fix it**
+
+| Tool | Access | What it does |
+|---|---|---|
+| `gi_propose_repair` | read | Turns a diagnosis into a concrete proposal: the rewritten step, which test owns it, and the token to write it. Applies nothing, and refuses on a stale diagnosis. |
+| `gi_validate_test` | read¹ | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Inlines modules first, then truncates at the first step that could submit a form. `dryRun` shows what would run without starting a browser. |
+| `gi_update_test` | **write** | Replaces a test's steps and/or renames it, behind four guards and a concurrency token. |
+| `gi_move_suite` | **write** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
+| `gi_create_suite` | **write** | Creates an empty suite, in a folder if you name one. Refuses a same-named sibling unless you insist. |
+| `gi_duplicate_test` | **write** | Copies a test, places it in a suite and renames it in one call. **The only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
+| `gi_run_test` | **run** | Executes a test exactly as saved and waits for the verdict. Its own gate, separate from writes. A test that submits a form is refused unless you confirm on that call. |
+
+¹ `gi_validate_test` saves nothing, but it drives a real browser against a real URL, so it is not marked read-only.
+
+The four write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is. A refusal changes nothing and names the variable to set. `gi_whoami` reports both gates.
 
 **Not included, on purpose.** Any deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Deleting a test is left out for the same reason — there is no version history to restore from.
 
@@ -41,7 +57,7 @@ Ghost Inspector's API is small and stable, so a 1:1 wrapper would add nothing ov
 - **Guardrails on the write path** — there is no version history for test steps and no recycle bin. Overwrites are forever.
 - **Tool descriptions that teach the calling model how not to break things** — the accumulated gotchas ship with the tool, so every agent gets them for free instead of learning them the expensive way.
 
-Other community wrappers of this API exist. The difference here is the posture: read-only until you opt in, no suite deletion at any opt-in level, and every write behind guards that cannot be turned off.
+Other community wrappers of this API exist. The difference here is the posture: nothing is written or executed until you opt in, no deletion at any opt-in level, and every write behind guards that cannot be turned off.
 
 Two worked examples of that third point, because it is the whole thesis.
 
@@ -79,8 +95,8 @@ Get your **personal** API key: Ghost Inspector → hover your name (top right) �
 |---|---|---|
 | `GHOST_INSPECTOR_API_KEY` | yes | Your personal key |
 | `GHOST_INSPECTOR_ORG_ID` | to execute a validation | Organization id — read it from `gi_whoami`. Not needed for `gi_validate_test`'s `dryRun` |
-| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Set to `true` to register mutating tools |
-| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Set to `true` to register `gi_run_test`. **Not implied by `ALLOW_WRITES`** — an edit can be rolled back from the backup, a submitted form cannot |
+| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Set to `true` to let the four mutating tools act. They are listed either way |
+| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Set to `true` to let `gi_run_test` execute. **Not implied by `ALLOW_WRITES`** — an edit can be rolled back from the backup this server returns, a submitted form cannot |
 
 Configuration is environment variables only. There is deliberately no `.env` support: this ships as a global command with no project directory of its own, and a second place to put a secret is a second place to leak it. The key is read fresh on every call, so rotating it takes effect without a restart.
 
@@ -146,7 +162,7 @@ This server will **never**:
 
 ## Safety model
 
-**Read-only unless you opt in.** Mutating tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. If you have not opted in, nothing can be changed no matter what your agent is asked to do. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
+**Nothing is written or executed unless you opt in.** The mutating tools act only when `GHOST_INSPECTOR_ALLOW_WRITES=true`, and `gi_run_test` only when `GHOST_INSPECTOR_ALLOW_RUNS=true`. Without those, nothing can be changed or run no matter what your agent is asked to do — the check is in the handler, so it holds regardless of what the caller sends. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
 
 **Gated, never hidden.** Withholding a tool by not registering it makes it indistinguishable from one that does not exist, and an agent will then tell you this server *cannot* write — convincingly, with nothing to contradict it. That happened, and it wasted a session.
 
@@ -190,7 +206,7 @@ npm run typecheck
 npm test          # builds first, then runs the suite
 ```
 
-157 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+174 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
 
 | File | What it pins |
 |---|---|
