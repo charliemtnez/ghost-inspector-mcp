@@ -27,6 +27,7 @@ import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
+import { getVacuousTests } from "./vacuous.js";
 import { proposeRepair } from "./repair.js";
 import { runTest } from "./run.js";
 import { moveSuite, updateTest } from "./writes.js";
@@ -380,6 +381,36 @@ server.registerTool(
     annotations: READ_ONLY,
   },
   async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
+);
+
+server.registerTool(
+  "gi_vacuous_tests",
+  {
+    title: "Ghost Inspector: green tests that prove nothing",
+    description:
+      "Finds tests that pass while verifying nothing. Green is the dangerous " +
+      "colour: a red test gets investigated, a hollow green one sits there while " +
+      "every report says coverage is fine.\n\n" +
+      "Three classes, kept apart because conflating them hides two of them. " +
+      "`executesNothing` runs zero steps — its definition is only `execute` " +
+      "calls into empty modules. `assertsNothing` runs its steps and contains no " +
+      "assertion anywhere in the chain, so it can only fail if a step errors; " +
+      "act on this one first, it is usually the largest. `worthChecking` is a " +
+      "SHORTLIST, not a verdict: their single assertion is the final step, so if " +
+      "its target also exists on the page the test starts from, it passes with " +
+      "the feature completely broken.\n\n" +
+      "🔴 That third class cannot be settled from the definition — the selector " +
+      "is simply present on the starting page and no earlier step mentions it. " +
+      "Scanning for a repeated target finds none of them. To decide, run the " +
+      "test with the decisive action removed and see whether the assertion still " +
+      "passes; if it does, the test proves nothing.\n\n" +
+      "Modules are excluded before counting: import-only deletes results, so " +
+      "including them would condemn the shared layer every live test depends on. " +
+      "Costs one request per test.",
+    inputSchema: {},
+    annotations: READ_ONLY,
+  },
+  async () => safeText(() => getVacuousTests()),
 );
 
 server.registerTool(
