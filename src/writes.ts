@@ -21,6 +21,12 @@
  * has moved since. A confirmation flag can be talked past by a persuaded model;
  * a timestamp it has to have actually read cannot be guessed.
  *
+ * That last sentence only holds because gi_get_test returns the token. While no
+ * read tool exposed it, the sole way to obtain one was to send a wrong value and
+ * harvest the right one from the refusal below — so the intended "prove you read
+ * the record" degraded into a two-step handshake that proved nothing. Any future
+ * token must stay readable through a read tool, or it becomes theatre again.
+ *
  * ⚠️ The token narrows the window; it cannot close it. Ghost Inspector has no
  * compare-and-swap, so the check is read-then-write on this side: two writers
  * who both read before either wrote will both pass. It catches the realistic
@@ -266,7 +272,8 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   if (String(before.dateUpdated ?? "") !== options.expectedDateUpdated) {
     return refuse("concurrency token mismatch", [
       `expectedDateUpdated was "${options.expectedDateUpdated}" but the record now reads "${String(before.dateUpdated ?? "")}".`,
-      "Someone changed this test since you read it, or you never read it. Re-read the current definition, redo your change against it, and pass the new dateUpdated. Nothing was written.",
+      "Someone changed this test since you read it, or you never read it. Nothing was written.",
+      "🔴 Do not simply resend with the value above. Your change was composed against a definition that is no longer stored, so replaying it would overwrite whatever that other edit did — and there is no version history to recover it from. Call gi_get_test, read what is there now, redo the change against it, and pass the dateUpdated it returns. The current definition is in `backup` below if you want to diff first.",
     ]);
   }
 

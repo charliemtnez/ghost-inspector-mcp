@@ -25,6 +25,12 @@ const FINDING_CAP = 25;
 const DAY_MS = 86_400_000;
 
 export interface StaleFinding {
+  id: string;
+  /**
+   * The test's `dateUpdated` at scan time — the token gi_update_test wants as
+   * `expectedDateUpdated`. Reported so a repair flows straight from a finding.
+   */
+  dateUpdated: string;
   name: string;
   suite: string;
   /** ISO timestamp of the last completed run. */
@@ -42,6 +48,9 @@ export interface StaleFinding {
 }
 
 export interface PlainFinding {
+  id: string;
+  /** See {@link StaleFinding.dateUpdated}. */
+  dateUpdated: string;
   name: string;
   suite: string;
   lastRun: string;
@@ -162,6 +171,11 @@ export function buildStaleReport(
 
     const outdated = selfChanged || changedModules.length > 0;
     const common = {
+      id: test._id,
+      // The write path's concurrency token, carried here so repairing a finding
+      // does not need a second read. A stale token is the correct outcome: it
+      // means the record moved between this report and the write.
+      dateUpdated: String(test.dateUpdated ?? ""),
       name: test.name ?? "(unnamed)",
       suite:
         test.suite && typeof test.suite === "object"

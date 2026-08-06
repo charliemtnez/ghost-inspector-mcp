@@ -2,9 +2,13 @@
 /**
  * ghost-inspector-mcp — MCP server entry point.
  *
- * Read-only unless GHOST_INSPECTOR_ALLOW_WRITES=true. Suite deletion is never
- * exposed: DELETE /suites/{id} cascades to every test in the suite with no
- * version history and no recycle bin.
+ * Every tool is registered and visible. Mutating tools refuse unless
+ * GHOST_INSPECTOR_ALLOW_WRITES=true and executing refuses unless
+ * GHOST_INSPECTOR_ALLOW_RUNS=true — enforced per call, so the answer to a
+ * caller without the opt-in is an instruction rather than an absence.
+ *
+ * Suite deletion is never exposed at any setting: DELETE /suites/{id} cascades
+ * to every test in the suite with no version history and no recycle bin.
  */
 
 import { readFileSync } from "node:fs";
@@ -13,13 +17,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { redact, writesAllowed } from "./config.js";
+import { redact, runsAllowed, writesAllowed } from "./config.js";
 import { request } from "./client.js";
+import { createSuite, duplicateTest } from "./create.js";
+import { getTest } from "./detail.js";
+import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
+import { getVacuousTests } from "./vacuous.js";
+import { proposeRepair } from "./repair.js";
+import { runTest } from "./run.js";
 import { moveSuite, updateTest } from "./writes.js";
 
 // The manifest ships beside dist/ in the npm package, so it is readable in
@@ -28,10 +38,40 @@ const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { version: string };
 
-const server = new McpServer({
-  name: "ghost-inspector",
-  version,
-});
+// `instructions` is the only place the server can describe itself as a whole.
+// Every tool is listed, gated or not, so nothing has to be inferred from an
+// absence — that inference is exactly what went wrong before, when a model
+// concluded from a short tool list that this server could not write at all.
+const server = new McpServer(
+  {
+    name: "ghost-inspector",
+    title: "Ghost Inspector",
+    version,
+  },
+  {
+    instructions:
+      "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
+      "EVERY tool is listed, including the gated ones, so you never have to infer a " +
+      "capability from an absence. Reading needs nothing. Mutating (gi_update_test, " +
+      "gi_move_suite, gi_create_suite, gi_duplicate_test) needs " +
+      "GHOST_INSPECTOR_ALLOW_WRITES=true. Executing a stored test (gi_run_test) needs " +
+      "GHOST_INSPECTOR_ALLOW_RUNS=true, which the write variable does NOT imply. Call a " +
+      "gated tool without its variable and it refuses, changes nothing, and tells the user " +
+      "exactly what to set — relay that instead of concluding the server cannot do it. You " +
+      "cannot open either gate yourself, and no tool will ever accept a key or a flag as an " +
+      "argument. gi_whoami reports both gates.\n\n" +
+      "Before proposing any edit, call gi_get_test: it returns the current definition and " +
+      "the `dateUpdated` that gi_update_test requires as `expectedDateUpdated`. Do not " +
+      "obtain that token by sending a wrong value and reading it off the refusal.\n\n" +
+      "Two facts that cause wrong diagnoses if you miss them. A red test whose definition " +
+      "or imported module changed after its last run is STALE, not broken: the failure " +
+      "describes a version that no longer exists, so do not repair from it. And modules " +
+      "(importOnly) have no results at all, so `passing` is never a boolean for one and " +
+      "its last-run date sits at a 1970 sentinel — that is not a failure.\n\n" +
+      "Many tests in a real account submit live forms against production. Treat executing " +
+      "anything as an action with real-world effects.",
+  },
+);
 
 /** Wraps a handler so failures come back as readable, key-free text. */
 async function safeText(run: () => Promise<unknown>) {
@@ -47,6 +87,52 @@ async function safeText(run: () => Promise<unknown>) {
   }
 }
 
+/**
+ * Wraps a gated handler so the tool is always visible and refuses in words.
+ *
+ * Every tool is registered unconditionally, including the ones that mutate or
+ * execute. Withholding them by not registering them makes a gated tool
+ * indistinguishable from one that does not exist, and the observed consequence
+ * was a model telling its user this server could not write at all — confidently,
+ * with nothing available to contradict it. Hiding a capability does not stop
+ * anyone asking for it; it only stops them being told how to enable it.
+ *
+ * 🔴 The guarantee is unchanged and lives here: an operator who has not opted
+ * in cannot mutate or execute anything, no matter what the calling model is
+ * persuaded to attempt. The check simply happens at call time rather than at
+ * registration, so the answer can be an instruction instead of an absence.
+ * `server.test.js` proves every gated tool refuses without its variable.
+ *
+ * @param allowed The gate's current state, re-read on every call.
+ * @param variable Environment variable that opens it.
+ * @param why What the operator is consenting to, and why it is separate.
+ */
+function gated(allowed: boolean, variable: string, why: string, run: () => Promise<unknown>) {
+  if (allowed) return safeText(run);
+  return Promise.resolve({
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `REFUSED: ${variable} is not set to "true", so this server will not do this.\n\n` +
+          `Nothing happened. ${why}\n\n` +
+          `This is the operator's decision and you cannot make it from a tool call. ` +
+          `Ask the user to set ${variable}=true in the environment that launches this ` +
+          `server, then restart it. For a Claude Code user that is:\n` +
+          `  claude mcp remove ghost-inspector -s user\n` +
+          `  claude mcp add ghost-inspector -s user -e ${variable}=true -- npx -y ghost-inspector-mcp\n` +
+          `Call gi_whoami afterwards to confirm the gate is open.`,
+      },
+    ],
+    isError: true,
+  });
+}
+
+const WHY_WRITES =
+  "Editing a Ghost Inspector test is permanent: there is no version history for steps and no recycle bin, so an operator opts in once, deliberately.";
+const WHY_RUNS =
+  "Running a stored test executes it against a real environment and can submit a real form. It is a separate decision from allowing edits, because an edit can be rolled back from the backup this server returns and a submission cannot.";
+
 interface Organization {
   _id: string;
   name?: string;
@@ -61,11 +147,18 @@ const READ_ONLY = { readOnlyHint: true, openWorldHint: true };
 server.registerTool(
   "gi_whoami",
   {
-    title: "Ghost Inspector: verify credentials",
+    title: "Ghost Inspector: verify credentials and check what this server may do",
     description:
-      "Confirms the configured API key works and lists the organizations it can " +
-      "reach. Read-only and safe to call first when diagnosing setup. Returns " +
-      "each organization's id — export the one you want as " +
+      "Confirms the configured API key works, lists the organizations it can " +
+      "reach, and reports whether writing is enabled. Read-only and safe to call " +
+      "first when diagnosing setup.\n\n" +
+      "🔴 Call this before concluding that this server cannot modify anything. Every " +
+      "tool is registered whether or not its gate is open, so a tool being listed " +
+      "says nothing about whether it will run. `writesEnabled` and `runsEnabled` " +
+      "are the authority — GHOST_INSPECTOR_ALLOW_WRITES and GHOST_INSPECTOR_ALLOW_RUNS. " +
+      "When one is false the operator must set the matching " +
+      "variable and restart this server; it cannot be turned on from a tool call.\n\n" +
+      "Returns each organization's id — export the one you want as " +
       "GHOST_INSPECTOR_ORG_ID to enable on-demand validation runs.",
     inputSchema: {},
     annotations: READ_ONLY,
@@ -75,6 +168,11 @@ server.registerTool(
       const orgs = await request<Organization[]>("GET", "organizations");
       return {
         writesEnabled: writesAllowed(),
+        runsEnabled: runsAllowed(),
+        gates: {
+          writes: "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test",
+          runs: "GHOST_INSPECTOR_ALLOW_RUNS — gi_run_test. Not implied by the write gate.",
+        },
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
       };
     }),
@@ -215,6 +313,140 @@ const STEP_SCHEMA = z.object({
 });
 
 server.registerTool(
+  "gi_get_test",
+  {
+    title: "Ghost Inspector: read one test, with the token an edit requires",
+    description:
+      "Returns a single test's stored definition, identity and current state: " +
+      "steps, startUrl, suite, whether it is a module, its last run, and its " +
+      "`dateUpdated`.\n\n" +
+      "🔴 `dateUpdated` is the concurrency token. gi_update_test requires it as " +
+      "`expectedDateUpdated` and refuses the write if the record moved since you " +
+      "read it. Call this first and pass the value through. Do not discover the " +
+      "token by sending a deliberately wrong one and reading the correct value " +
+      "off the refusal — that defeats the guard, which exists to prove the edit " +
+      "was composed against the definition that is actually stored.\n\n" +
+      "The steps returned are the test's OWN steps. An `execute` step names an " +
+      "imported module in `value` and is not expanded here, so the definition you " +
+      "edit may be smaller than the run you observed: a result expands every " +
+      "module inline. If the step you need to fix came from a module, edit that " +
+      "module's test, not this one.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => getTest(testId)),
+);
+
+server.registerTool(
+  "gi_test_result",
+  {
+    title: "Ghost Inspector: why is this test red",
+    description:
+      "The last run of one test: the step that failed, its error, and whether " +
+      "the result can be trusted at all. Read-only. This is the starting point " +
+      "for repairing a failure — gi_stale_tests tells you which tests to look " +
+      "at, this tells you what happened in one of them.\n\n" +
+      "🔴 Read `verdict` and `staleness` BEFORE the error. A verdict of `stale` " +
+      "means the test or one of its imported modules changed after this run, so " +
+      "the failure describes a definition that is no longer stored. Diagnosing " +
+      "from it is diagnosing from nothing, and a colleague may already have " +
+      "fixed it. Re-run the test and read the fresh result instead.\n\n" +
+      "🔴 `failingStep.resolvedTarget` is the selector that resolved, NOT what " +
+      "the test looks for. Ghost Inspector collapses an authored fallback array " +
+      "to the one it used, and sometimes normalises it so it matches nothing in " +
+      "the definition textually. `authoredTargets` is what was actually written. " +
+      "Reporting the resolved one as the intent is a real and easy misreading.\n\n" +
+      "🔴 `failingStep.ownedBy` names the test that contributed the step. " +
+      "Results expand imported modules inline, so the failing step frequently " +
+      "belongs to a module rather than to the test you asked about — that module " +
+      "is what needs editing, and editing it affects every test that imports it. " +
+      "The step's position in the result is meaningless against the definition; " +
+      "use `ownedBy.sequenceInOwner`.\n\n" +
+      "Other cases it distinguishes rather than blurring: a module (import-only " +
+      "tests have no results at all), a run still in flight (`passing: null` is " +
+      "pending, never failed), a red run with no failing step (the failure was " +
+      "outside the steps — a start URL that would not load), and results that " +
+      "have been purged, which it reports as a horizon instead of as silence.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+      runsBack: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("0 (default) is the latest run. Higher walks backwards, within the retained window."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
+);
+
+server.registerTool(
+  "gi_vacuous_tests",
+  {
+    title: "Ghost Inspector: green tests that prove nothing",
+    description:
+      "Finds tests that pass while verifying nothing. Green is the dangerous " +
+      "colour: a red test gets investigated, a hollow green one sits there while " +
+      "every report says coverage is fine.\n\n" +
+      "Three classes, kept apart because conflating them hides two of them. " +
+      "`executesNothing` runs zero steps — its definition is only `execute` " +
+      "calls into empty modules. `assertsNothing` runs its steps and contains no " +
+      "assertion anywhere in the chain, so it can only fail if a step errors; " +
+      "act on this one first, it is usually the largest. `worthChecking` is a " +
+      "SHORTLIST, not a verdict: their single assertion is the final step, so if " +
+      "its target also exists on the page the test starts from, it passes with " +
+      "the feature completely broken.\n\n" +
+      "🔴 That third class cannot be settled from the definition — the selector " +
+      "is simply present on the starting page and no earlier step mentions it. " +
+      "Scanning for a repeated target finds none of them. To decide, run the " +
+      "test with the decisive action removed and see whether the assertion still " +
+      "passes; if it does, the test proves nothing.\n\n" +
+      "Modules are excluded before counting: import-only deletes results, so " +
+      "including them would condemn the shared layer every live test depends on. " +
+      "Costs one request per test.",
+    inputSchema: {},
+    annotations: READ_ONLY,
+  },
+  async () => safeText(() => getVacuousTests()),
+);
+
+server.registerTool(
+  "gi_propose_repair",
+  {
+    title: "Ghost Inspector: propose a fix without applying one",
+    description:
+      "Turns a diagnosis into a concrete argument: what to change, in which " +
+      "test, and the token needed to write it. Read-only — it applies nothing " +
+      "and returns steps for you to validate first.\n\n" +
+      "🔴 This server cannot see the page. It has the definition, the error and " +
+      "the Ghost Inspector contract, so proposals come in two kinds and are " +
+      "never blurred. `applicable` proposals carry a rewritten step and come " +
+      "from rules that hold whatever the page contains — an assertTextPresent " +
+      "with no target always fails, an eval without an explicit return is always " +
+      "undefined. `advisory` ones name a real problem that cannot be fixed " +
+      "without looking at the DOM, and deliberately stop there rather than " +
+      "inventing a selector.\n\n" +
+      "Refuses outright on a stale diagnosis. A failure that predates a change " +
+      "describes a definition that is no longer stored, so a repair built on it " +
+      "would overwrite whatever replaced it, with no version history to recover.\n\n" +
+      "🔴 `editTarget` is frequently NOT the test you asked about. Results " +
+      "expand imported modules inline, so the failing step often belongs to a " +
+      "module — and `proposedSteps` is that module's full step list, not this " +
+      "test's. Editing a module affects every test importing it.\n\n" +
+      "Validate `proposedSteps` with gi_validate_test before writing. A proposal " +
+      "that has not been run is a hypothesis.",
+    inputSchema: {
+      testId: z.string().describe("The failing test. Its diagnosis drives the proposal."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => proposeRepair(testId)),
+);
+
+server.registerTool(
   "gi_validate_test",
   {
     title: "Ghost Inspector: validate a definition without saving or submitting",
@@ -289,8 +521,10 @@ server.registerTool(
 //   2. return the complete prior definition as the caller's rollback,
 //   3. apply the change,
 //   4. re-GET and diff against what was sent.
-if (writesAllowed()) {
-  server.registerTool(
+// Registered unconditionally. See `gated` above: the write gate is enforced
+// per call so a model can be told how to open it, instead of concluding the
+// capability does not exist.
+server.registerTool(
     "gi_update_test",
     {
       title: "Ghost Inspector: update a test, behind four guards",
@@ -337,7 +571,7 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
-      safeText(() =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         updateTest({
           testId,
           expectedDateUpdated,
@@ -375,16 +609,147 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ suiteId, folderId, expectedCurrentFolder }) =>
-      safeText(() => moveSuite({ suiteId, folderId, expectedCurrentFolder })),
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        moveSuite({ suiteId, folderId, expectedCurrentFolder }),
+      ),
   );
 
-  // Deliberately absent:
-  //   · suite deletion — DELETE /suites/{id}/ cascades to every test with no undo.
-  //   · test creation — Ghost Inspector documents no create endpoint. The
-  //     documented path is POST /tests/{id}/duplicate/ followed by an update,
-  //     which needs a source test, so it is a different tool than "create" and
-  //     is not guessed at here.
-}
+  server.registerTool(
+    "gi_create_suite",
+    {
+      title: "Ghost Inspector: create a suite",
+      description:
+        "Creates an empty suite, optionally inside a folder. The folder is " +
+        "honoured at creation, so no follow-up move is needed.\n\n" +
+        "Refuses when a suite of the same name already exists in the same place, " +
+        "because Ghost Inspector allows the duplicate and nothing distinguishes " +
+        "the two afterwards. Pass allowDuplicateName only when the repetition is " +
+        "genuinely intended.\n\n" +
+        "🔴 Getting the name right matters more than usual: this server never " +
+        "exposes suite deletion, because DELETE /suites/{id}/ cascades to every " +
+        "test inside with no version history and no recycle bin. Folders have no " +
+        "delete route in the API at all. Anything created here is tidied up by " +
+        "hand, in the web UI.\n\n" +
+        "Creating adds and overwrites nothing, so no concurrency token applies.",
+      inputSchema: {
+        name: z.string().describe("Suite name. Must be unique where it is being created."),
+        organization: z
+          .string()
+          .optional()
+          .describe("Organization id. Defaults to GHOST_INSPECTOR_ORG_ID."),
+        folder: z.string().optional().describe("Folder id to create it in. Omit to leave it unfiled."),
+        allowDuplicateName: z
+          .boolean()
+          .optional()
+          .describe("Proceed even though a suite of this name already exists here."),
+      },
+      // Additive: it creates and overwrites nothing.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ name, organization, folder, allowDuplicateName }) =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        createSuite({ name, organization, folder, allowDuplicateName }),
+      ),
+  );
+
+  server.registerTool(
+    "gi_duplicate_test",
+    {
+      title: "Ghost Inspector: copy a test — the only way to get a new one",
+      description:
+        "Copies an existing test, then places it in a suite and renames it in one " +
+        "call. Returns the new test with its steps and its dateUpdated.\n\n" +
+        "🔴 This is how a test comes into existence here, and it is not a create. " +
+        "Ghost Inspector has no endpoint that builds a test from nothing — " +
+        "POST /tests/ is the listing wearing a POST — so a source test is " +
+        "mandatory and there is no way around that. Pick the closest existing " +
+        "test and adapt the copy with gi_update_test.\n\n" +
+        "🔴 The copy's schedule is cleared unless keepSchedule is set. Whether a " +
+        "copy inherits its source's testFrequency is not verified, and in an " +
+        "account whose tests submit live forms against production, an inherited " +
+        "schedule means an unattended run posting real data. The uncertain case " +
+        "is pinned to the safe direction.\n\n" +
+        "The copy carries the source's steps verbatim, including any `execute` " +
+        "steps: it imports the same modules, so editing those modules still " +
+        "affects it. If the copy is placed in a suite with a different viewport " +
+        "or browser, selectors that resolved for the source may not resolve for " +
+        "it — validate with gi_validate_test before trusting it.\n\n" +
+        "If the copy is made but placing or renaming it fails, the response says " +
+        "so and returns the id, because the copy is already real and needs " +
+        "cleaning up.",
+      inputSchema: {
+        sourceTestId: z.string().describe("The test to copy. Required — there is no create."),
+        name: z.string().optional().describe('New name. Defaults to "<source> (Copy)".'),
+        suiteId: z.string().optional().describe("Suite to place it in. Defaults to the source's suite."),
+        keepSchedule: z
+          .boolean()
+          .optional()
+          .describe("Keep any inherited schedule. Off by default; leaving it off is the safe choice."),
+      },
+      // Additive: it creates a new record and overwrites nothing existing.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ sourceTestId, name, suiteId, keepSchedule }) =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        duplicateTest({ sourceTestId, name, suiteId, keepSchedule }),
+      ),
+  );
+
+  // Deliberately absent: suite deletion. DELETE /suites/{id}/ exists and
+// cascades to every test inside, with no version history and no recycle bin.
+
+// Executing a stored test sits behind its OWN gate. An operator who allowed
+// writes has not thereby allowed this: an edit is recoverable from the backup
+// the write path returns, a submitted form is not recoverable at all.
+server.registerTool(
+    "gi_run_test",
+    {
+      title: "Ghost Inspector: run a stored test for real",
+      description:
+        "Executes a test exactly as saved and waits for the verdict. Use it to " +
+        "confirm a repair actually worked, or to get a fresh result when the " +
+        "stored one is stale.\n\n" +
+        "🔴 Nothing is truncated here. Unlike gi_validate_test, which runs a " +
+        "throwaway copy and stops before anything can submit, this runs the real " +
+        "test against the real startUrl — in most accounts, production. If the " +
+        "test fills and submits a form, this posts a real record into whatever " +
+        "that form feeds, and nothing here can withdraw it.\n\n" +
+        "Because of that, a test that submits is refused unless `confirmSubmit` " +
+        "is set. The check inlines imported modules first, since a test whose " +
+        "steps are only `execute` calls hides its submit inside one. A test that " +
+        "submits nothing runs without the flag. If a chain cannot be fully " +
+        "expanded it counts as submitting — an unnecessary confirmation is " +
+        "cheaper than an unintended record.\n\n" +
+        "If you only need to know whether the selectors still resolve, this is " +
+        "the wrong tool: gi_validate_test answers that without submitting.\n\n" +
+        "🔴 A wait that expires is NOT a failure. Browser runs take 20-70 " +
+        "seconds and slow ones take longer; the response returns the result id " +
+        "and says the run is still going. Read the outcome with gi_test_result " +
+        "rather than concluding the test failed.",
+      inputSchema: {
+        testId: z.string().describe("The 24-character test id. Import-only tests cannot run."),
+        confirmSubmit: z
+          .boolean()
+          .optional()
+          .describe(
+            "Required only when the test contains a step that could submit a form. Setting it means you accept a real submission against a real environment.",
+          ),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(1000)
+          .optional()
+          .describe("How long to wait before handing back the result id. Default 240000."),
+      },
+      // Not read-only and not destructive in the overwrite sense: it changes
+      // nothing stored, but it acts on the outside world and cannot be undone.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ testId, confirmSubmit, timeoutMs }) =>
+      gated(runsAllowed(), "GHOST_INSPECTOR_ALLOW_RUNS", WHY_RUNS, () =>
+        runTest({ testId, confirmSubmit, timeoutMs }),
+      ),
+  );
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
