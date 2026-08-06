@@ -6,6 +6,58 @@ Tool names, input schemas and MCP annotations are part of the interface here: a
 calling model's behaviour depends on them, and a client may gate permissions on
 them. Changes to any of those are listed even when no code path moved.
 
+## [0.2.0] — 2026-08-06
+
+The diagnose → repair → verify cycle. 0.1.x could say which tests were worth
+looking at; it could not say what happened inside one, run one to check a fix,
+or create anything.
+
+### Added
+
+- **`gi_test_result`** — why one test is red: the failing step, its error, and
+  which test or module owns it. Leads with the staleness verdict, because a
+  result that predates a change is not evidence. Reports the selectors a step
+  was *authored* with alongside the one that resolved.
+- **`gi_run_test`** — executes a test exactly as saved, behind its own
+  `GHOST_INSPECTOR_ALLOW_RUNS` gate. A test that submits a form is refused
+  unless confirmed on that call; a test that submits nothing runs without
+  ceremony.
+- **`gi_propose_repair`** — turns a diagnosis into a concrete proposal and
+  applies nothing. Separates rewrites that follow from the contract from
+  advisories that would need the DOM, rather than inventing a selector.
+- **`gi_vacuous_tests`** — green tests that prove nothing, in three classes:
+  runs zero steps, runs steps with no assertion anywhere, or a shortlist whose
+  lone final assertion may have been true before the test acted.
+- **`gi_get_test`** — one test's definition plus the `dateUpdated` the write
+  path requires as its concurrency token.
+- **`gi_create_suite`** and **`gi_duplicate_test`** — Ghost Inspector has no
+  endpoint that creates a test, so a copy of an existing one is the only route
+  and the tool is named for what it does. Suites can be created outright.
+
+### Changed
+
+- 🔴 **Gated tools are now listed and refuse when called, instead of being
+  hidden.** Withholding a tool by not registering it is indistinguishable over
+  the protocol from the tool not existing, and the observed result was an agent
+  reporting that this server could not write at all. The guarantee is unchanged
+  — the check moved into the handler — but a caller without the opt-in now gets
+  an instruction naming the variable to set instead of a silence.
+- `gi_stale_tests` findings carry the test id and its `dateUpdated`, so a repair
+  follows from the report that found it without a second read.
+- The concurrency-token refusal sends the caller back to re-read and recompose
+  rather than resend.
+
+### Fixed
+
+- **The write token was harvestable, and that was the only way to get one.** No
+  read tool returned `dateUpdated`, so the sole path to a write was to send a
+  wrong token and take the correct one from the refusal — which proves nothing
+  about having read the record. `gi_get_test` supplies it properly.
+- **`POST /tests/{id}/execute/` blocks until the run finishes**, unlike
+  `on-demand/execute`. The wait now goes on the request itself; the API client's
+  60s default would have aborted healthy runs and left no result id to recover
+  them with.
+
 ## [0.1.1] — 2026-08-05
 
 ### Fixed
