@@ -22,6 +22,7 @@ const READ_ONLY = [
   "gi_inventory",
   "gi_module_usage",
   "gi_stale_tests",
+  "gi_test_result",
   "gi_validate_test",
   "gi_whoami",
 ];

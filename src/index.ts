@@ -17,6 +17,7 @@ import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
 import { getTest } from "./detail.js";
+import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
@@ -276,6 +277,50 @@ server.registerTool(
     annotations: READ_ONLY,
   },
   async ({ testId }) => safeText(() => getTest(testId)),
+);
+
+server.registerTool(
+  "gi_test_result",
+  {
+    title: "Ghost Inspector: why is this test red",
+    description:
+      "The last run of one test: the step that failed, its error, and whether " +
+      "the result can be trusted at all. Read-only. This is the starting point " +
+      "for repairing a failure — gi_stale_tests tells you which tests to look " +
+      "at, this tells you what happened in one of them.\n\n" +
+      "🔴 Read `verdict` and `staleness` BEFORE the error. A verdict of `stale` " +
+      "means the test or one of its imported modules changed after this run, so " +
+      "the failure describes a definition that is no longer stored. Diagnosing " +
+      "from it is diagnosing from nothing, and a colleague may already have " +
+      "fixed it. Re-run the test and read the fresh result instead.\n\n" +
+      "🔴 `failingStep.resolvedTarget` is the selector that resolved, NOT what " +
+      "the test looks for. Ghost Inspector collapses an authored fallback array " +
+      "to the one it used, and sometimes normalises it so it matches nothing in " +
+      "the definition textually. `authoredTargets` is what was actually written. " +
+      "Reporting the resolved one as the intent is a real and easy misreading.\n\n" +
+      "🔴 `failingStep.ownedBy` names the test that contributed the step. " +
+      "Results expand imported modules inline, so the failing step frequently " +
+      "belongs to a module rather than to the test you asked about — that module " +
+      "is what needs editing, and editing it affects every test that imports it. " +
+      "The step's position in the result is meaningless against the definition; " +
+      "use `ownedBy.sequenceInOwner`.\n\n" +
+      "Other cases it distinguishes rather than blurring: a module (import-only " +
+      "tests have no results at all), a run still in flight (`passing: null` is " +
+      "pending, never failed), a red run with no failing step (the failure was " +
+      "outside the steps — a start URL that would not load), and results that " +
+      "have been purged, which it reports as a horizon instead of as silence.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+      runsBack: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("0 (default) is the latest run. Higher walks backwards, within the retained window."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
 );
 
 server.registerTool(
