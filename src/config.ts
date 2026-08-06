@@ -9,6 +9,7 @@
 const KEY_VAR = "GHOST_INSPECTOR_API_KEY";
 const ORG_VAR = "GHOST_INSPECTOR_ORG_ID";
 const WRITES_VAR = "GHOST_INSPECTOR_ALLOW_WRITES";
+const RUNS_VAR = "GHOST_INSPECTOR_ALLOW_RUNS";
 
 /** Thrown when configuration is missing. Its message is safe to surface. */
 export class ConfigError extends Error {
@@ -62,6 +63,20 @@ export function requireOrgId(): string {
  */
 export function writesAllowed(): boolean {
   return process.env[WRITES_VAR]?.trim().toLowerCase() === "true";
+}
+
+/**
+ * Whether the stored-test execution tool should be registered.
+ *
+ * 🔴 Its own variable, and `GHOST_INSPECTOR_ALLOW_WRITES` does not imply it.
+ * Editing a definition and running a test are different acts with different
+ * consequences: an edit is recoverable from the backup the write path returns,
+ * while a run of a test that submits a form puts a real record in whatever
+ * system that form feeds, and nothing here can take it back. An operator who
+ * accepted the first has not thereby accepted the second.
+ */
+export function runsAllowed(): boolean {
+  return process.env[RUNS_VAR]?.trim().toLowerCase() === "true";
 }
 
 /**

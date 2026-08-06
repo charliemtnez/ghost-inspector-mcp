@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { redact, writesAllowed } from "./config.js";
+import { redact, runsAllowed, writesAllowed } from "./config.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
 import { getTest } from "./detail.js";
@@ -23,6 +23,7 @@ import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
+import { runTest } from "./run.js";
 import { moveSuite, updateTest } from "./writes.js";
 
 // The manifest ships beside dist/ in the npm package, so it is readable in
@@ -566,6 +567,59 @@ if (writesAllowed()) {
 
   // Deliberately absent: suite deletion. DELETE /suites/{id}/ exists and
   // cascades to every test inside, with no version history and no recycle bin.
+}
+
+// Executing a stored test sits behind its OWN gate. An operator who allowed
+// writes has not thereby allowed this: an edit is recoverable from the backup
+// the write path returns, a submitted form is not recoverable at all.
+if (runsAllowed()) {
+  server.registerTool(
+    "gi_run_test",
+    {
+      title: "Ghost Inspector: run a stored test for real",
+      description:
+        "Executes a test exactly as saved and waits for the verdict. Use it to " +
+        "confirm a repair actually worked, or to get a fresh result when the " +
+        "stored one is stale.\n\n" +
+        "🔴 Nothing is truncated here. Unlike gi_validate_test, which runs a " +
+        "throwaway copy and stops before anything can submit, this runs the real " +
+        "test against the real startUrl — in most accounts, production. If the " +
+        "test fills and submits a form, this posts a real record into whatever " +
+        "that form feeds, and nothing here can withdraw it.\n\n" +
+        "Because of that, a test that submits is refused unless `confirmSubmit` " +
+        "is set. The check inlines imported modules first, since a test whose " +
+        "steps are only `execute` calls hides its submit inside one. A test that " +
+        "submits nothing runs without the flag. If a chain cannot be fully " +
+        "expanded it counts as submitting — an unnecessary confirmation is " +
+        "cheaper than an unintended record.\n\n" +
+        "If you only need to know whether the selectors still resolve, this is " +
+        "the wrong tool: gi_validate_test answers that without submitting.\n\n" +
+        "🔴 A wait that expires is NOT a failure. Browser runs take 20-70 " +
+        "seconds and slow ones take longer; the response returns the result id " +
+        "and says the run is still going. Read the outcome with gi_test_result " +
+        "rather than concluding the test failed.",
+      inputSchema: {
+        testId: z.string().describe("The 24-character test id. Import-only tests cannot run."),
+        confirmSubmit: z
+          .boolean()
+          .optional()
+          .describe(
+            "Required only when the test contains a step that could submit a form. Setting it means you accept a real submission against a real environment.",
+          ),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(1000)
+          .optional()
+          .describe("How long to wait before handing back the result id. Default 240000."),
+      },
+      // Not read-only and not destructive in the overwrite sense: it changes
+      // nothing stored, but it acts on the outside world and cannot be undone.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ testId, confirmSubmit, timeoutMs }) =>
+      safeText(() => runTest({ testId, confirmSubmit, timeoutMs })),
+  );
 }
 
 const transport = new StdioServerTransport();

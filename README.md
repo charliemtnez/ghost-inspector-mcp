@@ -6,7 +6,7 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Eleven tools: seven that only read, and four that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Twelve tools: seven that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
@@ -20,6 +20,7 @@ Eleven tools: seven that only read, and four that write and are registered only 
 | `gi_update_test` | **yes** | Replaces a test's steps and/or renames it, behind four guards and a concurrency token. |
 | `gi_move_suite` | **yes** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
 | `gi_create_suite` | **yes** | Creates an empty suite, in a folder if you name one. Refuses a same-named sibling unless you insist. |
+| `gi_run_test` | **runs** | Executes a test exactly as saved and waits for the verdict. Its own gate, separate from writes. A test that submits a form is refused unless you confirm per call. |
 | `gi_duplicate_test` | **yes** | Copies a test, places it in a suite and renames it in one call. **This is the only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
 
 The four write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`. If your agent tells you this server cannot modify anything, it is reading an empty tool list: ask it to call `gi_whoami` and check `writesEnabled`.
@@ -75,6 +76,7 @@ Get your **personal** API key: Ghost Inspector → hover your name (top right) �
 | `GHOST_INSPECTOR_API_KEY` | yes | Your personal key |
 | `GHOST_INSPECTOR_ORG_ID` | to execute a validation | Organization id — read it from `gi_whoami`. Not needed for `gi_validate_test`'s `dryRun` |
 | `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Set to `true` to register mutating tools |
+| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Set to `true` to register `gi_run_test`. **Not implied by `ALLOW_WRITES`** — an edit can be rolled back from the backup, a submitted form cannot |
 
 Configuration is environment variables only. There is deliberately no `.env` support: this ships as a global command with no project directory of its own, and a second place to put a secret is a second place to leak it. The key is read fresh on every call, so rotating it takes effect without a restart.
 
@@ -163,6 +165,10 @@ That token narrows the window rather than closing it. Ghost Inspector has no com
 
 All four guards are verified against a live account, on a disposable clone that was created, written to, and deleted — the account was byte-identical afterward. That exercise found two defects the offline tests could not: Ghost Inspector normalises steps on write, so a naive round-trip diff cried "the write did not land" about a write that had landed perfectly; and the concurrency token was described as stronger than it is. A verifier that cries wolf is worse than none, because the next real warning gets ignored.
 
+**Running a stored test is gated separately.** `gi_run_test` is the one tool that executes a test exactly as saved, with nothing truncated — so in most accounts it posts to production. It needs `GHOST_INSPECTOR_ALLOW_RUNS=true`, which `ALLOW_WRITES` does not imply: an edit is recoverable from the backup the write path returns, a submitted form is not recoverable at all. On top of that, a test that submits is refused unless you confirm on that call. The check inlines modules first, since a test whose steps are only `execute` calls hides its submit inside one, and a chain that cannot be fully expanded counts as submitting.
+
+Confirmation is asked for only where there is a consequence, which is the point — a flag every call needs is a flag every caller sets by reflex. Measured on a real lead-generation account, 31 of 40 tests would ask for it and 9 ran without; those 31 genuinely click a submit control.
+
 **Validation does not submit anything.** `gi_validate_test` uses on-demand execution, which runs a definition and discards it, so nothing in your account changes. But it drives a real browser against a real URL, so two guards apply and neither can be turned off:
 
 1. **Modules are inlined before anything is inspected.** A test whose steps are only `execute` calls hides its submit click inside a module, and guarding the definition as written would see nothing. Measured on a real account: of eight such tests, five would have posted a live form.
@@ -178,7 +184,7 @@ npm run typecheck
 npm test          # builds first, then runs the suite
 ```
 
-148 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+157 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
 
 | File | What it pins |
 |---|---|
@@ -192,6 +198,7 @@ npm test          # builds first, then runs the suite
 | `diagnose.test.js` | A step that never ran is not named as the failure; a resolved selector is not passed off as what the test looks for; a failing step from a module points at the module; a purged run is not reported as a test that never ran |
 | `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
 | `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form; an import's condition gates every step it imports instead of being dropped |
+| `run.test.js` | Allowing writes does not allow running; a submit hidden inside a module still demands confirmation; a chain that could not be fully expanded counts as submitting |
 | `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences; a field that only appears after the write is still an unexpected change |
 | `server.test.js` | The server starts, speaks the protocol, the write gate holds end to end, and every tool's annotations state the posture the code enforces |
 

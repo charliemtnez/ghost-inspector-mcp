@@ -52,6 +52,8 @@ Note: a per-user key still carries that user's permissions. If the user is an or
 
 🔴 **Gating by non-registration is invisible, so the server must announce it.** A withheld tool and a nonexistent one look identical over the protocol: the model sees the tools it sees. Observed in real use — a model reported "this is not a permission that gets enabled, it is a capability the server does not expose" and the user believed it, because nothing contradicted it. `writesEnabled` was in `gi_whoami`'s response the whole time; its description promised only credential checking, so nobody called it to ask about writing. **The fix is a sign, never an open door**: declare the gate in the handshake `instructions` and in the description of the tool that reports it. Do not register write tools unconditionally and fail at call time — that trades the guarantee for a message.
 
+**Executing a stored test needs its own gate.** `GHOST_INSPECTOR_ALLOW_RUNS`, never folded into `ALLOW_WRITES`. The two consent to different things: a write is recoverable from the backup guard 2 returns, a submitted form is a record in someone else's system and nothing here withdraws it. On top of the gate, a per-call `confirmSubmit` is required **only when the test actually submits**, reusing the validation guard's detector so modules are inlined first. Friction only where there is consequence — a flag every call needs is one every caller sets by reflex, which is exactly why the write path refused a boolean confirmation. Measured on a real lead-gen account: 31 of 40 tests would require it, 9 would not, and none were flagged merely because a chain truncated.
+
 **Never expose suite deletion.** `DELETE /suites/{id}/` exists (undocumented) and **cascades to every test in the suite**, with no version history and no recycle bin. The time it saves does not justify the blast radius from an agent. Leave it as a deliberate `curl` by someone who knows what they are doing.
 
 **Write path guards** — every mutating tool performs these, and they are not skippable:
@@ -214,6 +216,7 @@ npm run build && node dist/index.js
 | `GHOST_INSPECTOR_API_KEY` | yes | Per-user key from Account Settings → API Access |
 | `GHOST_INSPECTOR_ORG_ID` | for on-demand execution | Consumer's organization id — config, never hardcoded |
 | `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Registers the mutating tools when `true` |
+| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Registers `gi_run_test` when `true`. Deliberately **not** implied by `ALLOW_WRITES` |
 
 **Environment variables only — do not add `dotenv` or an `.env` file.** This ships as a global command with no project directory of its own, so a `.env` beside the source would not be read in the installed case anyway. More to the point, a second sanctioned place to keep the key is a second place to leak it, which is the opposite of this project's purpose. The documented path is `~/.gi-key` at `600` plus an export in the shell profile. An `.env.example` existed briefly and was removed for promising a mechanism nothing implemented; `.env*` stays in `.gitignore` so a file created out of habit can never be committed.
 

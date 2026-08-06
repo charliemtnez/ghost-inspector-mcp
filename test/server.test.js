@@ -38,6 +38,7 @@ async function listTools(env = {}) {
       GHOST_INSPECTOR_API_KEY: "",
       GHOST_INSPECTOR_ORG_ID: "",
       GHOST_INSPECTOR_ALLOW_WRITES: "",
+      GHOST_INSPECTOR_ALLOW_RUNS: "",
       ...env,
     },
   });
@@ -174,6 +175,35 @@ test("the write gate stays shut for anything an operator might type instead", as
     const { names } = await listTools({ GHOST_INSPECTOR_ALLOW_WRITES: value });
     assert.deepEqual(names, READ_ONLY, `ALLOW_WRITES=${JSON.stringify(value)} must not open the gate`);
   }
+});
+
+test("the run gate is separate from the write gate, in both directions", async () => {
+  // Executing a stored test submits whatever it submits, against production in
+  // most accounts, and no backup undoes that. An operator who accepted edits
+  // has not accepted this. If these two ever share a variable, opting into
+  // writes silently opts into posting live data.
+  const writesOnly = await listTools({ GHOST_INSPECTOR_ALLOW_WRITES: "true" });
+  assert.ok(!writesOnly.names.includes("gi_run_test"), "allowing writes must not allow running");
+
+  const runsOnly = await listTools({ GHOST_INSPECTOR_ALLOW_RUNS: "true" });
+  assert.ok(runsOnly.names.includes("gi_run_test"), "its own variable must register it");
+  assert.ok(!runsOnly.names.includes("gi_update_test"), "and must not open the write gate either");
+});
+
+test("the run gate stays shut for anything an operator might type instead", async () => {
+  for (const value of ["", "1", "yes", "on", "false", "truthy"]) {
+    const { names } = await listTools({ GHOST_INSPECTOR_ALLOW_RUNS: value });
+    assert.ok(!names.includes("gi_run_test"), `ALLOW_RUNS=${JSON.stringify(value)} must not open the gate`);
+  }
+});
+
+test("running a test declares that it acts on the outside world", async () => {
+  const { tools } = await listTools({ GHOST_INSPECTOR_ALLOW_RUNS: "true" });
+  const run = tools.find((t) => t.name === "gi_run_test");
+  assert.equal(run.annotations.readOnlyHint, false, "it drives a real browser and can submit");
+  assert.equal(run.annotations.openWorldHint, true);
+  assert.match(run.description, /confirmSubmit/, "must tell the model about the per-call confirmation");
+  assert.match(run.description, /gi_validate_test/, "must point at the tool that answers without submitting");
 });
 
 test("a tool call with no API key fails with instructions, not a stack trace", async () => {
