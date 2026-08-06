@@ -25,7 +25,7 @@ const READ_ONLY = [
   "gi_validate_test",
   "gi_whoami",
 ];
-const WRITE = ["gi_move_suite", "gi_update_test"];
+const WRITE = ["gi_create_suite", "gi_duplicate_test", "gi_move_suite", "gi_update_test"];
 
 /** Starts the server, asks for its tools over stdio, and returns their names. */
 async function listTools(env = {}) {
@@ -150,6 +150,20 @@ test("every tool declares the posture a client's permission model reads", async 
   assert.equal(update.annotations.destructiveHint, true, "an unversioned overwrite is destructive");
   const move = tools.find((t) => t.name === "gi_move_suite");
   assert.equal(move.annotations.destructiveHint, false, "a move is the one reversible write");
+  for (const name of ["gi_create_suite", "gi_duplicate_test"]) {
+    assert.equal(
+      tools.find((t) => t.name === name).annotations.destructiveHint,
+      false,
+      `${name} adds a record and overwrites none`,
+    );
+  }
+});
+
+test("no deletion is reachable, with the gate wide open", async () => {
+  // DELETE /suites/{id}/ cascades to every test inside with no version history
+  // and no recycle bin. It stays a deliberate curl by someone who knows.
+  const { names } = await listTools({ GHOST_INSPECTOR_ALLOW_WRITES: "true" });
+  assert.ok(!names.some((n) => /delete|remove|destroy/i.test(n)), `no destructive tool may exist: ${names}`);
 });
 
 test("the write gate stays shut for anything an operator might type instead", async () => {

@@ -6,7 +6,7 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Eight tools: six that only read, and two that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Ten tools: six that only read, and four that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
@@ -18,10 +18,14 @@ Eight tools: six that only read, and two that write and are registered only if y
 | `gi_validate_test` | no | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Inlines modules first, then truncates at the first step that could submit a form. `dryRun` shows exactly what would run without starting a browser. |
 | `gi_update_test` | **yes** | Replaces a test's steps and/or renames it, behind four guards and a concurrency token. |
 | `gi_move_suite` | **yes** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
+| `gi_create_suite` | **yes** | Creates an empty suite, in a folder if you name one. Refuses a same-named sibling unless you insist. |
+| `gi_duplicate_test` | **yes** | Copies a test, places it in a suite and renames it in one call. **This is the only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
 
-The two write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`. If your agent tells you this server cannot modify anything, it is reading an empty tool list: ask it to call `gi_whoami` and check `writesEnabled`.
+The four write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`. If your agent tells you this server cannot modify anything, it is reading an empty tool list: ask it to call `gi_whoami` and check `writesEnabled`.
 
-**Not included, on purpose.** Suite deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Test creation: Ghost Inspector documents no create endpoint, and this server does not guess at one — the documented path is `POST /tests/{id}/duplicate/` followed by an update, which needs a source test and so is a different operation than "create".
+**Not included, on purpose.** Any deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Deleting a test is left out for the same reason — there is no version history to restore from.
+
+**Creating a test from nothing is not possible, and not for want of trying.** Ghost Inspector has no create endpoint: `POST /tests/` returns the test listing, `PUT /tests/` and the organization- and folder-scoped variants 404, and the vendor documents update, duplicate and delete with no create. `gi_duplicate_test` is the real path — copy an existing test, place it, rename it — and it is named after what it does rather than what you wish it did.
 
 **Not built.** Dating a regression back to its last green run: old results are purged, so there is a horizon past which the API simply cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool.
 

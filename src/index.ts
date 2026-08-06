@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
+import { createSuite, duplicateTest } from "./create.js";
 import { getTest } from "./detail.js";
 import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
@@ -441,12 +442,85 @@ if (writesAllowed()) {
       safeText(() => moveSuite({ suiteId, folderId, expectedCurrentFolder })),
   );
 
-  // Deliberately absent:
-  //   · suite deletion — DELETE /suites/{id}/ cascades to every test with no undo.
-  //   · test creation — Ghost Inspector documents no create endpoint. The
-  //     documented path is POST /tests/{id}/duplicate/ followed by an update,
-  //     which needs a source test, so it is a different tool than "create" and
-  //     is not guessed at here.
+  server.registerTool(
+    "gi_create_suite",
+    {
+      title: "Ghost Inspector: create a suite",
+      description:
+        "Creates an empty suite, optionally inside a folder. The folder is " +
+        "honoured at creation, so no follow-up move is needed.\n\n" +
+        "Refuses when a suite of the same name already exists in the same place, " +
+        "because Ghost Inspector allows the duplicate and nothing distinguishes " +
+        "the two afterwards. Pass allowDuplicateName only when the repetition is " +
+        "genuinely intended.\n\n" +
+        "🔴 Getting the name right matters more than usual: this server never " +
+        "exposes suite deletion, because DELETE /suites/{id}/ cascades to every " +
+        "test inside with no version history and no recycle bin. Folders have no " +
+        "delete route in the API at all. Anything created here is tidied up by " +
+        "hand, in the web UI.\n\n" +
+        "Creating adds and overwrites nothing, so no concurrency token applies.",
+      inputSchema: {
+        name: z.string().describe("Suite name. Must be unique where it is being created."),
+        organization: z
+          .string()
+          .optional()
+          .describe("Organization id. Defaults to GHOST_INSPECTOR_ORG_ID."),
+        folder: z.string().optional().describe("Folder id to create it in. Omit to leave it unfiled."),
+        allowDuplicateName: z
+          .boolean()
+          .optional()
+          .describe("Proceed even though a suite of this name already exists here."),
+      },
+      // Additive: it creates and overwrites nothing.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ name, organization, folder, allowDuplicateName }) =>
+      safeText(() => createSuite({ name, organization, folder, allowDuplicateName })),
+  );
+
+  server.registerTool(
+    "gi_duplicate_test",
+    {
+      title: "Ghost Inspector: copy a test — the only way to get a new one",
+      description:
+        "Copies an existing test, then places it in a suite and renames it in one " +
+        "call. Returns the new test with its steps and its dateUpdated.\n\n" +
+        "🔴 This is how a test comes into existence here, and it is not a create. " +
+        "Ghost Inspector has no endpoint that builds a test from nothing — " +
+        "POST /tests/ is the listing wearing a POST — so a source test is " +
+        "mandatory and there is no way around that. Pick the closest existing " +
+        "test and adapt the copy with gi_update_test.\n\n" +
+        "🔴 The copy's schedule is cleared unless keepSchedule is set. Whether a " +
+        "copy inherits its source's testFrequency is not verified, and in an " +
+        "account whose tests submit live forms against production, an inherited " +
+        "schedule means an unattended run posting real data. The uncertain case " +
+        "is pinned to the safe direction.\n\n" +
+        "The copy carries the source's steps verbatim, including any `execute` " +
+        "steps: it imports the same modules, so editing those modules still " +
+        "affects it. If the copy is placed in a suite with a different viewport " +
+        "or browser, selectors that resolved for the source may not resolve for " +
+        "it — validate with gi_validate_test before trusting it.\n\n" +
+        "If the copy is made but placing or renaming it fails, the response says " +
+        "so and returns the id, because the copy is already real and needs " +
+        "cleaning up.",
+      inputSchema: {
+        sourceTestId: z.string().describe("The test to copy. Required — there is no create."),
+        name: z.string().optional().describe('New name. Defaults to "<source> (Copy)".'),
+        suiteId: z.string().optional().describe("Suite to place it in. Defaults to the source's suite."),
+        keepSchedule: z
+          .boolean()
+          .optional()
+          .describe("Keep any inherited schedule. Off by default; leaving it off is the safe choice."),
+      },
+      // Additive: it creates a new record and overwrites nothing existing.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ sourceTestId, name, suiteId, keepSchedule }) =>
+      safeText(() => duplicateTest({ sourceTestId, name, suiteId, keepSchedule })),
+  );
+
+  // Deliberately absent: suite deletion. DELETE /suites/{id}/ exists and
+  // cascades to every test inside, with no version history and no recycle bin.
 }
 
 const transport = new StdioServerTransport();
