@@ -65,10 +65,12 @@ async function listTools(env = {}) {
   const parsed = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
   const listing = parsed.find((m) => m?.id === 2);
   assert.ok(listing, `no tools/list response. exit=${code} stderr=${err.slice(0, 400)}`);
+  const handshake = parsed.find((m) => m?.id === 1)?.result;
   return {
     names: listing.result.tools.map((t) => t.name).sort(),
     tools: listing.result.tools,
-    serverInfo: parsed.find((m) => m?.id === 1)?.result?.serverInfo,
+    serverInfo: handshake?.serverInfo,
+    instructions: handshake?.instructions,
   };
 }
 
@@ -84,6 +86,27 @@ test("the version on the wire is the package version, not a copy of it", async (
   );
   const { serverInfo } = await listTools();
   assert.equal(serverInfo?.version, pkg.version);
+});
+
+test("a gated server still tells the model that writing exists", async () => {
+  // Withholding the write tools by not registering them makes their absence
+  // indistinguishable from them not existing, so a model reports "this server
+  // cannot write" and the user believes it. Observed in the wild. The handshake
+  // is the only place that can say otherwise before any tool is called.
+  const { instructions } = await listTools();
+  assert.ok(instructions, "the handshake must carry instructions");
+  assert.match(instructions, /GHOST_INSPECTOR_ALLOW_WRITES/, "must name the variable that opens the gate");
+  assert.match(instructions, /gi_whoami/, "must point at the tool that reports writesEnabled");
+  assert.match(instructions, /gated, not missing/, "must correct the wrong conclusion explicitly");
+});
+
+test("the write gate is described by gi_whoami, not just reported by it", async () => {
+  // The flag was always in the response; a model that reads the description as
+  // "verifies credentials" never calls it to answer "may I edit this?".
+  const { tools } = await listTools();
+  const whoami = tools.find((t) => t.name === "gi_whoami");
+  assert.match(whoami.description, /writesEnabled/);
+  assert.match(whoami.description, /GHOST_INSPECTOR_ALLOW_WRITES/);
 });
 
 test("every tool ships a description and a schema the model can read", async () => {

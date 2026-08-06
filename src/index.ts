@@ -28,10 +28,35 @@ const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { version: string };
 
-const server = new McpServer({
-  name: "ghost-inspector",
-  version,
-});
+// `instructions` is the only place the server can describe itself as a whole.
+// It matters most for the write gate: mutating tools are withheld by not being
+// registered, so a model that is not told they exist sees five tools and
+// concludes the server cannot write at all — a wrong answer it has no way to
+// check. State the gate here rather than opening it.
+const server = new McpServer(
+  {
+    name: "ghost-inspector",
+    title: "Ghost Inspector",
+    version,
+  },
+  {
+    instructions:
+      "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
+      "READ TOOLS are always available. WRITE TOOLS (gi_update_test, gi_move_suite) are " +
+      "registered only when the operator sets GHOST_INSPECTOR_ALLOW_WRITES=true. If you " +
+      "do not see them, they are gated, not missing — call gi_whoami to read " +
+      "`writesEnabled`, and tell the user to set that variable and restart this server. " +
+      "You cannot enable it yourself, and no tool will ever accept a key or a flag as an " +
+      "argument.\n\n" +
+      "Two facts that cause wrong diagnoses if you miss them. A red test whose definition " +
+      "or imported module changed after its last run is STALE, not broken: the failure " +
+      "describes a version that no longer exists, so do not repair from it. And modules " +
+      "(importOnly) have no results at all, so `passing` is never a boolean for one and " +
+      "its last-run date sits at a 1970 sentinel — that is not a failure.\n\n" +
+      "Many tests in a real account submit live forms against production. Treat executing " +
+      "anything as an action with real-world effects.",
+  },
+);
 
 /** Wraps a handler so failures come back as readable, key-free text. */
 async function safeText(run: () => Promise<unknown>) {
@@ -61,11 +86,18 @@ const READ_ONLY = { readOnlyHint: true, openWorldHint: true };
 server.registerTool(
   "gi_whoami",
   {
-    title: "Ghost Inspector: verify credentials",
+    title: "Ghost Inspector: verify credentials and check what this server may do",
     description:
-      "Confirms the configured API key works and lists the organizations it can " +
-      "reach. Read-only and safe to call first when diagnosing setup. Returns " +
-      "each organization's id — export the one you want as " +
+      "Confirms the configured API key works, lists the organizations it can " +
+      "reach, and reports whether writing is enabled. Read-only and safe to call " +
+      "first when diagnosing setup.\n\n" +
+      "🔴 Call this before concluding that this server cannot modify anything. " +
+      "The write tools (gi_update_test, gi_move_suite) are withheld by not being " +
+      "registered, so their absence from the tool list is indistinguishable from " +
+      "them not existing. `writesEnabled` is the authority: when it is false the " +
+      "operator must set GHOST_INSPECTOR_ALLOW_WRITES=true and restart this " +
+      "server. It cannot be turned on from a tool call.\n\n" +
+      "Returns each organization's id — export the one you want as " +
       "GHOST_INSPECTOR_ORG_ID to enable on-demand validation runs.",
     inputSchema: {},
     annotations: READ_ONLY,

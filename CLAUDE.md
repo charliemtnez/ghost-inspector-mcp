@@ -50,6 +50,8 @@ Note: a per-user key still carries that user's permissions. If the user is an or
 
 **Read-only by default.** Write tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. An operator who did not opt in cannot mutate anything, no matter what the calling model is convinced to do.
 
+🔴 **Gating by non-registration is invisible, so the server must announce it.** A withheld tool and a nonexistent one look identical over the protocol: the model sees the tools it sees. Observed in real use — a model reported "this is not a permission that gets enabled, it is a capability the server does not expose" and the user believed it, because nothing contradicted it. `writesEnabled` was in `gi_whoami`'s response the whole time; its description promised only credential checking, so nobody called it to ask about writing. **The fix is a sign, never an open door**: declare the gate in the handshake `instructions` and in the description of the tool that reports it. Do not register write tools unconditionally and fail at call time — that trades the guarantee for a message.
+
 **Never expose suite deletion.** `DELETE /suites/{id}/` exists (undocumented) and **cascades to every test in the suite**, with no version history and no recycle bin. The time it saves does not justify the blast radius from an agent. Leave it as a deliberate `curl` by someone who knows what they are doing.
 
 **Write path guards** — every mutating tool performs these, and they are not skippable:
