@@ -34,6 +34,12 @@
           "description": "Set to exactly true to register the two mutating tools. Anything else keeps the server read-only.",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "description": "Set to \"true\" to let gi_run_test execute a stored test against a real environment, which can submit a real form. Deliberately not implied by GHOST_INSPECTOR_ALLOW_WRITES: an edit can be rolled back from the backup this server returns, a submission cannot. Defaults to false.",
+          "isRequired": false,
+          "isSecret": false,
+          "name": "GHOST_INSPECTOR_ALLOW_RUNS"
         }
       ]
     }
