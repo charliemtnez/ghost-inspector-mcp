@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { assessSubmit } from "../dist/run.js";
+import { assessSubmit, DEFAULT_WAIT_MS } from "../dist/run.js";
 import { runsAllowed, writesAllowed } from "../dist/config.js";
 
 const step = (over = {}) => ({ command: "click", target: "", value: "", fromModule: null, ...over });
@@ -39,6 +39,15 @@ test("the run gate opens for an exact true and nothing else", async () => {
   } finally {
     process.env = before;
   }
+});
+
+test("the wait outlasts a real run, including the queue in front of it", async () => {
+  // POST /tests/{id}/execute/ blocks for the whole run — measured at 50s of
+  // wall time for a 29s test, the rest being queue. The API client defaults to
+  // 60s, which would abort healthy runs and report a test that is still going
+  // as an error. This margin is the only thing preventing that.
+  assert.ok(DEFAULT_WAIT_MS > 60_000, "must exceed the client's own default timeout");
+  assert.ok(DEFAULT_WAIT_MS >= 240_000, "a slow run plus queue needs real headroom");
 });
 
 test("a submit hidden in a module still demands confirmation", async () => {

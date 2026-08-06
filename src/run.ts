@@ -26,6 +26,16 @@ import { pollResult, request, type RunResult, type TestRecord } from "./client.j
 import { type Steps } from "./graph.js";
 import { expandSteps, findSubmit, type Loaded } from "./validate.js";
 
+/**
+ * How long to wait on the execute call.
+ *
+ * The endpoint blocks for the duration of the run, and the observed wall time
+ * exceeds the test's own execution time by the queue wait — 50s of wall for a
+ * 29s test. The client's 60s default would therefore abort healthy runs, so
+ * this is deliberately well above any browser run.
+ */
+export const DEFAULT_WAIT_MS = 240_000;
+
 export interface RunOptions {
   testId: string;
   /** Required only when the test contains a step that could submit a form. */
@@ -150,11 +160,57 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
     };
   }
 
-  const pending = await request<RunResult>("POST", `tests/${options.testId}/execute`);
-  const resultId = String(pending._id ?? "");
   const notes: string[] = [];
   if (assessment.submits) {
     notes.push("This run submitted a real form, as confirmed. Check the receiving system if that was not intended.");
+  }
+
+  // 🔴 This endpoint BLOCKS until the run finishes — measured at 50s for a
+  // 29s test, the difference being queue time. It does NOT behave like
+  // on-demand/execute, which answers in ~0.2s with a pending record. So the
+  // wait has to be spent on the request itself, not on polling afterwards, and
+  // the client's 60s default would abort a perfectly healthy run.
+  const waitMs = options.timeoutMs ?? DEFAULT_WAIT_MS;
+  let pending: RunResult;
+  try {
+    pending = await request<RunResult>("POST", `tests/${options.testId}/execute`, { timeoutMs: waitMs });
+  } catch (error) {
+    // The request timed out, but Ghost Inspector already started the run and
+    // no id ever came back. Calling this a failure would invent a red test and
+    // strand a run nobody knows how to look up.
+    return {
+      started: true,
+      submitAssessment: assessment,
+      resultId: null,
+      outcome: null,
+      notes: [
+        ...notes,
+        `🔴 The run was STARTED and is still going — the wait expired before Ghost Inspector answered: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "This is not a failure and the test was not skipped. Because this endpoint only answers when the run completes, no result id exists yet. Call gi_test_result on this test shortly to read the outcome, or raise timeoutMs.",
+      ],
+    };
+  }
+
+  const resultId = String(pending._id ?? "");
+
+  // Usually already finished, since the POST waited for it. Poll only if not.
+  if (pending.passing !== null && pending.passing !== undefined) {
+    return {
+      started: true,
+      submitAssessment: assessment,
+      resultId: resultId || null,
+      outcome: {
+        passing: pending.passing,
+        executionTimeMs: typeof pending.executionTime === "number" ? pending.executionTime : null,
+        endUrl: pending.endUrl === undefined || pending.endUrl === null ? null : String(pending.endUrl),
+      },
+      notes: [
+        ...notes,
+        "For the failing step, its error and which test owns it, call gi_test_result on this test.",
+      ],
+    };
   }
 
   if (!resultId) {
@@ -170,6 +226,9 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
     };
   }
 
+  // Defensive fallback. Today the POST above always comes back finished, but
+  // that is measured behaviour on one account and not a documented guarantee,
+  // so a pending record still gets polled rather than reported as no verdict.
   try {
     const finished = await pollResult(resultId, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),

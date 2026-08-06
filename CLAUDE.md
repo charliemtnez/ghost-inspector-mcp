@@ -94,8 +94,10 @@ Verified empirically. The official docs omit all of these.
 - Each result step carries `extra.source = {test, sequence}` — **the test that contributed the step and its position inside that test** — plus `extra.rootSequence`, the position in the root test. Verified: all 15 steps carried a distinct `source`, and `rootSequence` spanned 0–5, matching the 6 definition steps. **This is the reverse map that makes an automated repair proposal possible**; without it the module that owns a failing step can only be guessed.
 - 🔴 **A result step's `_id` is not a stable anchor into the definition.** Observed live: 16 of 17 result step ids matched the definition and the failing one did not, on a test whose `dateUpdated` *predates* the run by 35 seconds — so "the step was edited after the run" does not explain it and the cause is unknown. Anchor by `extra.source.test` + `extra.source.sequence`, never by step `_id`.
 
-**Asynchrony**
-- `execute` and `on-demand/execute` return `HTTP 200` in ~0.2s with a **pending** record: `passing: null`, `executionTime: null`. Poll `GET /results/{id}/`. A browser run takes 20-70s.
+**Asynchrony** — 🔴 **the two execution endpoints do NOT behave the same way.** An earlier version of this file said they did; it was wrong, and the mistake aborts healthy runs.
+- `POST /organizations/{orgId}/on-demand/execute` is **async**: `HTTP 200` in ~0.2s with a **pending** record (`passing: null`, `executionTime: null`). Poll `GET /results/{id}/`.
+- 🔴 `POST /tests/{id}/execute/` **BLOCKS until the run finishes** and returns the completed result — `passing` already a boolean, `executionTime` already filled. Measured twice: **50s of wall time for runs of 29s and 32s**, the difference being queue wait. There is nothing to poll, and nothing comes back early.
+- **Consequence for any caller: the wait must be spent on the request itself.** The client's default 60s timeout sits barely above the observed wall time, so a slightly slower run or a busier queue aborts a request for a run that is proceeding normally — and because the response never arrived, **no result id exists to look it up with**. `gi_run_test` passes an explicit 240s and, on expiry, reports the run as *started and still going* rather than as an error, pointing at `gi_test_result` to collect the outcome.
 - 🔴 `passing: null` means *not finished*, not *failed*. Conflating them invents failures that do not exist.
 
 **JavaScript steps**
