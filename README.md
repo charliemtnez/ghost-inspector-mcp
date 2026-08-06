@@ -6,12 +6,13 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Ten tools: six that only read, and four that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Eleven tools: seven that only read, and four that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
 | `gi_whoami` | no | Verifies your API key, lists the organizations it can reach with their ids, and reports whether writing is enabled. Start here when something is misconfigured, or when an agent tells you this server cannot modify anything. |
 | `gi_get_test` | no | One test's stored definition, identity and state — including the `dateUpdated` that `gi_update_test` requires as its concurrency token. Call it before composing any edit. |
+| `gi_test_result` | no | Why one test is red: the failing step, its error, the selectors it was *authored* with rather than just the one that resolved, and which test or module actually owns the step. Leads with a staleness verdict, because a result that predates a change is not evidence. |
 | `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds tests that **pass while executing no steps at all**, modules that contribute nothing, modules nobody imports, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
 | `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
@@ -141,6 +142,8 @@ This server will **never**:
 
 **Read-only unless you opt in.** Mutating tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. If you have not opted in, nothing can be changed no matter what your agent is asked to do. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
 
+**The gate announces itself.** Withholding a tool by not registering it makes it indistinguishable from a tool that does not exist, so an agent will tell you this server *cannot* write and be entirely convincing about it. The server states the gate in its handshake instructions, and `gi_whoami` reports `writesEnabled`. If your agent claims writing is impossible, ask it to call `gi_whoami`. The answer is never to register the write tools and reject the call later — that swaps a guarantee for a promise.
+
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}/` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
 **Failed requests are not retried.** A timeout or a dropped connection surfaces as an error instead of being attempted again. That is a decision, not an omission: `execute` and the write endpoints are not idempotent, and a retry that silently ran a browser test twice — or re-applied a write whose first attempt actually landed — buys convenience with exactly the kind of surprise this server exists to prevent. Read-only calls are safe to retry, so your agent can simply ask again.
@@ -152,7 +155,9 @@ This server will **never**:
 3. apply the change;
 4. re-read and diff twice over: that what was sent landed exactly, and that every field you did not send is untouched. `HTTP 200` proves neither.
 
-**Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since — a refusal tells you the current value so the retry is one step. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed.
+**Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed.
+
+That last claim is only true because `gi_get_test` returns the token. In 0.1.1 no read tool did, and the refusal handed back the current value — so the only route to a write was to send a wrong token deliberately and harvest the right one from the rejection. A model asked to repair a test worked that out on its own and planned it, because nothing else was available. The guard proved nothing, and the normal flow started with a deliberate failure. **A guard that demands proof of a read has to ship with the read that supplies it.** A refusal still shows the current value, since that is part of diagnosing a real conflict, but it now sends you back to re-read and recompose rather than resend: replaying an edit built against a definition that is no longer stored overwrites whoever replaced it.
 
 That token narrows the window rather than closing it. Ghost Inspector has no compare-and-swap, so the check is read-then-write on the client side: two writers who both read before either wrote will both pass. It catches acting on a copy you read minutes or days ago, which is the realistic case, not a genuine race.
 
@@ -173,15 +178,18 @@ npm run typecheck
 npm test          # builds first, then runs the suite
 ```
 
-122 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
+148 tests, no test dependencies — Node's own runner and `assert`. They are organised by what breaks if the assertion fails, not by coverage, so a failure name tells you what you broke:
 
 | File | What it pins |
 |---|---|
 | `config.test.js` | The write gate opens for an exact `true` and not for `1` or `yes`; the key is re-read every call so rotation works; `redact` strips both the query parameter and a bare occurrence |
+| `detail.test.js` | The concurrency token reaches the caller; a module's missing verdict is not read as a failure; steps come back unexpanded so an edit targets the test that owns them |
+| `create.test.js` | A copy is silenced unless the caller insists — anything short of an explicit `true` still clears the schedule; a near-duplicate suite name is refused before it exists |
 | `client.test.js` | Truthy is not `true`; an unknown date reads as never-executed, because erring the other way slips a live module into a prune list; a stalled body download cannot outlive the request timeout |
 | `graph.test.js` | A cycle terminates and is still reported once shared subtrees stop being re-expanded; depth does not inflate on a level that adds nobody; hitting the documented nesting limit is reported rather than passed off as a total |
 | `inventory.test.js` | Every test lands in exactly one bucket; a module is never counted as failing; an empty suite still appears |
 | `modules.test.js` | The transitive radius exceeds the direct count; a cycle is a flag rather than an inflated number; a test that executes nothing is found |
+| `diagnose.test.js` | A step that never ran is not named as the failure; a resolved selector is not passed off as what the test looks for; a failing step from a module points at the module; a purged run is not reported as a test that never ran |
 | `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
 | `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form; an import's condition gates every step it imports instead of being dropped |
 | `writes.test.js` | The direction of every uncertain case in the staleness guard; Ghost Inspector's own step defaults are not reported as differences; a field that only appears after the write is still an unexpected change |
