@@ -6,13 +6,14 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Twelve tools, all of them always visible: seven that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Thirteen tools, all of them always visible: eight that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
 | `gi_whoami` | no | Verifies your API key, lists the organizations it can reach with their ids, and reports whether writing is enabled. Start here when something is misconfigured, or when an agent tells you this server cannot modify anything. |
 | `gi_get_test` | no | One test's stored definition, identity and state — including the `dateUpdated` that `gi_update_test` requires as its concurrency token. Call it before composing any edit. |
 | `gi_test_result` | no | Why one test is red: the failing step, its error, the selectors it was *authored* with rather than just the one that resolved, and which test or module actually owns the step. Leads with a staleness verdict, because a result that predates a change is not evidence. |
+| `gi_propose_repair` | no | Turns a diagnosis into a concrete proposal — the rewritten step, which test owns it, and the token to write it. Applies nothing, and refuses on a stale diagnosis. |
 | `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds tests that **pass while executing no steps at all**, modules that contribute nothing, modules nobody imports, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
 | `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
@@ -198,6 +199,7 @@ npm test          # builds first, then runs the suite
 | `inventory.test.js` | Every test lands in exactly one bucket; a module is never counted as failing; an empty suite still appears |
 | `modules.test.js` | The transitive radius exceeds the direct count; a cycle is a flag rather than an inflated number; a test that executes nothing is found |
 | `diagnose.test.js` | A step that never ran is not named as the failure; a resolved selector is not passed off as what the test looks for; a failing step from a module points at the module; a purged run is not reported as a test that never ran |
+| `repair.test.js` | Rules that hold whatever the page contains are applied; a fragile selector is named but never rewritten, because inventing one would be a guess |
 | `stale.test.js` | The red pile splits with nothing lost; an unparseable date counts as changed; modules are excluded rather than evaluated |
 | `validate.test.js` | A submit inherited from a module is caught — guarding the definition as written was measured letting five of eight real tests post a live form; an import's condition gates every step it imports instead of being dropped |
 | `run.test.js` | Allowing writes does not allow running; a submit hidden inside a module still demands confirmation; a chain that could not be fully expanded counts as submitting |

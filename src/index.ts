@@ -27,6 +27,7 @@ import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
 import { validateTest, type ValidateOptions } from "./validate.js";
+import { proposeRepair } from "./repair.js";
 import { runTest } from "./run.js";
 import { moveSuite, updateTest } from "./writes.js";
 
@@ -379,6 +380,39 @@ server.registerTool(
     annotations: READ_ONLY,
   },
   async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
+);
+
+server.registerTool(
+  "gi_propose_repair",
+  {
+    title: "Ghost Inspector: propose a fix without applying one",
+    description:
+      "Turns a diagnosis into a concrete argument: what to change, in which " +
+      "test, and the token needed to write it. Read-only — it applies nothing " +
+      "and returns steps for you to validate first.\n\n" +
+      "🔴 This server cannot see the page. It has the definition, the error and " +
+      "the Ghost Inspector contract, so proposals come in two kinds and are " +
+      "never blurred. `applicable` proposals carry a rewritten step and come " +
+      "from rules that hold whatever the page contains — an assertTextPresent " +
+      "with no target always fails, an eval without an explicit return is always " +
+      "undefined. `advisory` ones name a real problem that cannot be fixed " +
+      "without looking at the DOM, and deliberately stop there rather than " +
+      "inventing a selector.\n\n" +
+      "Refuses outright on a stale diagnosis. A failure that predates a change " +
+      "describes a definition that is no longer stored, so a repair built on it " +
+      "would overwrite whatever replaced it, with no version history to recover.\n\n" +
+      "🔴 `editTarget` is frequently NOT the test you asked about. Results " +
+      "expand imported modules inline, so the failing step often belongs to a " +
+      "module — and `proposedSteps` is that module's full step list, not this " +
+      "test's. Editing a module affects every test importing it.\n\n" +
+      "Validate `proposedSteps` with gi_validate_test before writing. A proposal " +
+      "that has not been run is a hypothesis.",
+    inputSchema: {
+      testId: z.string().describe("The failing test. Its diagnosis drives the proposal."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => proposeRepair(testId)),
 );
 
 server.registerTool(
