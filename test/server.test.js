@@ -18,6 +18,7 @@ import path from "node:path";
 const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
 const READ_ONLY = [
+  "gi_get_test",
   "gi_inventory",
   "gi_module_usage",
   "gi_stale_tests",
@@ -107,6 +108,18 @@ test("the write gate is described by gi_whoami, not just reported by it", async 
   const whoami = tools.find((t) => t.name === "gi_whoami");
   assert.match(whoami.description, /writesEnabled/);
   assert.match(whoami.description, /GHOST_INSPECTOR_ALLOW_WRITES/);
+});
+
+test("the concurrency token is reachable without provoking a refusal", async () => {
+  // gi_update_test demands expectedDateUpdated as proof the caller read the
+  // record. While no read tool returned it, the only way to get one was to send
+  // a wrong value and harvest the right one from the refusal — which proves
+  // nothing and became the documented-by-accident happy path.
+  const { names, tools } = await listTools();
+  assert.ok(names.includes("gi_get_test"), "a read tool must expose dateUpdated");
+  const detail = tools.find((t) => t.name === "gi_get_test");
+  assert.match(detail.description, /expectedDateUpdated/, "must connect the token to the write tool");
+  assert.equal(detail.annotations.readOnlyHint, true);
 });
 
 test("every tool ships a description and a schema the model can read", async () => {

@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { redact, writesAllowed } from "./config.js";
 import { request } from "./client.js";
+import { getTest } from "./detail.js";
 import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
@@ -48,6 +49,9 @@ const server = new McpServer(
       "`writesEnabled`, and tell the user to set that variable and restart this server. " +
       "You cannot enable it yourself, and no tool will ever accept a key or a flag as an " +
       "argument.\n\n" +
+      "Before proposing any edit, call gi_get_test: it returns the current definition and " +
+      "the `dateUpdated` that gi_update_test requires as `expectedDateUpdated`. Do not " +
+      "obtain that token by sending a wrong value and reading it off the refusal.\n\n" +
       "Two facts that cause wrong diagnoses if you miss them. A red test whose definition " +
       "or imported module changed after its last run is STALE, not broken: the failure " +
       "describes a version that no longer exists, so do not repair from it. And modules " +
@@ -245,6 +249,33 @@ const STEP_SCHEMA = z.object({
     .describe("JavaScript deciding whether the step runs. AND-ed with conditions inherited from enclosing imports."),
   optional: z.boolean().optional().describe("Continue when this step fails."),
 });
+
+server.registerTool(
+  "gi_get_test",
+  {
+    title: "Ghost Inspector: read one test, with the token an edit requires",
+    description:
+      "Returns a single test's stored definition, identity and current state: " +
+      "steps, startUrl, suite, whether it is a module, its last run, and its " +
+      "`dateUpdated`.\n\n" +
+      "🔴 `dateUpdated` is the concurrency token. gi_update_test requires it as " +
+      "`expectedDateUpdated` and refuses the write if the record moved since you " +
+      "read it. Call this first and pass the value through. Do not discover the " +
+      "token by sending a deliberately wrong one and reading the correct value " +
+      "off the refusal — that defeats the guard, which exists to prove the edit " +
+      "was composed against the definition that is actually stored.\n\n" +
+      "The steps returned are the test's OWN steps. An `execute` step names an " +
+      "imported module in `value` and is not expanded here, so the definition you " +
+      "edit may be smaller than the run you observed: a result expands every " +
+      "module inline. If the step you need to fix came from a module, edit that " +
+      "module's test, not this one.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => getTest(testId)),
+);
 
 server.registerTool(
   "gi_validate_test",

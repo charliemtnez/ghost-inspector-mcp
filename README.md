@@ -6,11 +6,12 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Seven tools: five that only read, and two that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Eight tools: six that only read, and two that write and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
-| `gi_whoami` | no | Verifies your API key and lists the organizations it can reach, with their ids. Start here when something is misconfigured. |
+| `gi_whoami` | no | Verifies your API key, lists the organizations it can reach with their ids, and reports whether writing is enabled. Start here when something is misconfigured, or when an agent tells you this server cannot modify anything. |
+| `gi_get_test` | no | One test's stored definition, identity and state — including the `dateUpdated` that `gi_update_test` requires as its concurrency token. Call it before composing any edit. |
 | `gi_inventory` | no | The whole account as a folder → suite tree, with per-suite counts of passing / failing / module / not-yet-run tests and the names of the failing ones. Filter by folder, or ask for failing suites only. |
 | `gi_module_usage` | no | The reverse index of `execute` steps: for every imported test, who imports it directly and the full transitive blast radius. Also finds tests that **pass while executing no steps at all**, modules that contribute nothing, modules nobody imports, imported tests missing the import-only flag, broken references, and cycles. Costs one request per test. |
 | `gi_stale_tests` | no | Splits red tests into stale and genuinely broken by comparing the whole `execute` chain's `dateUpdated` against each test's last run. Also finds passing tests whose result predates a change. Costs one request per test. |
@@ -18,7 +19,7 @@ Seven tools: five that only read, and two that write and are registered only if 
 | `gi_update_test` | **yes** | Replaces a test's steps and/or renames it, behind four guards and a concurrency token. |
 | `gi_move_suite` | **yes** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
 
-The two write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`.
+The two write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`. If your agent tells you this server cannot modify anything, it is reading an empty tool list: ask it to call `gi_whoami` and check `writesEnabled`.
 
 **Not included, on purpose.** Suite deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Test creation: Ghost Inspector documents no create endpoint, and this server does not guess at one — the documented path is `POST /tests/{id}/duplicate/` followed by an update, which needs a source test and so is a different operation than "create".
 
