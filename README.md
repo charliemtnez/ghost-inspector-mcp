@@ -43,11 +43,23 @@ The table is a map of the surface. Each tool's own description, which is what yo
 
 The four write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is. A refusal changes nothing and names the variable to set. `gi_whoami` reports both gates.
 
-**Not included, on purpose.** Any deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Deleting a test is left out for the same reason — there is no version history to restore from.
+**Not included, on purpose.** Deletion of any kind. `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent; deleting a test is left out for the same reason, since there is no version history to restore from.
 
-**Creating a test from nothing is not possible, and not for want of trying.** Ghost Inspector has no create endpoint: `POST /tests/` returns the test listing, `PUT /tests/` and the organization- and folder-scoped variants 404, and the vendor documents update, duplicate and delete with no create. `gi_duplicate_test` is the real path — copy an existing test, place it, rename it — and it is named after what it does rather than what you wish it did.
+**Creating a test from nothing is not possible.** Ghost Inspector exposes no create endpoint — `POST /tests/` returns the test listing, the organization- and folder-scoped variants return 404, and the vendor documents update, duplicate and delete with no create. `gi_duplicate_test` is the supported route: copy an existing test, place it, rename it. It is named for what it does, because calling it "create" would set the wrong expectation about needing a source.
 
-**Not built.** Dating a regression back to its last green run: old results are purged, so there is a horizon past which the API simply cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool.
+**Not built.** Dating a regression back to its last green run. Old results are purged, so there is a horizon past which the API cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool.
+
+## What you can ask for
+
+You talk to your agent, not to the tools. These are the questions the server is built to answer:
+
+- *"Which of my failing tests are actually broken, and which just haven't run since someone edited them?"* — the distinction the dashboard cannot make, and the reason a triage session usually starts here.
+- *"Why is the checkout test red?"* — the failing step, its error, and which test or module owns it.
+- *"If I change this shared module, what breaks?"* — direct importers and the full transitive reach, which is normally much larger.
+- *"Which of my green tests aren't really testing anything?"* — three separate ways a test can pass while proving nothing.
+- *"Fix that selector."* — propose a change, run it without saving to check it resolves, apply it behind the guards, then run the test to confirm. Each step is a separate tool, and the ones that change or execute anything need you to opt in first.
+
+**A note on scale.** This server earns its place on accounts that have accumulated mess: hundreds of tests, shared modules with unclear ownership, a failing list nobody has triaged in months. On a small, well-tended account — a couple of dozen tests, no modules, everything green — `gi_stale_tests`, `gi_module_usage` and `gi_vacuous_tests` will correctly return nothing, and the server will look like it does very little. That is the honest answer for that account, not a malfunction.
 
 ## Why this exists
 
@@ -65,7 +77,7 @@ Marking a test **Import Only** — Ghost Inspector's way of saying "this is a mo
 
 And a test whose steps are only `execute` calls into modules with no steps **runs zero steps and passes**, because nothing can fail. The dashboard shows it green while it asserts nothing, which is worse than red because nobody investigates green. Emptying one shared module does that to every test importing it, silently and all at once.
 
-That turned out to be the smallest of three ways a test can be hollow. On a real 454-test account `gi_vacuous_tests` found 85 running no steps, **182 running their steps with no assertion anywhere**, and 90 more whose only assertion is the final step and may well have been true before the test did anything. Every one of them green.
+That is the smallest of three ways a test can be hollow. On a real account of a few hundred tests, `gi_vacuous_tests` found that the largest group by far was not this one but **tests that run every step and contain no assertion at all** — they can only fail if a step errors. A third group asserts only on its final step, which may well have been true before the test did anything. All of them green.
 
 ## Install
 
@@ -164,9 +176,9 @@ This server will **never**:
 
 **Nothing is written or executed unless you opt in.** The mutating tools act only when `GHOST_INSPECTOR_ALLOW_WRITES=true`, and `gi_run_test` only when `GHOST_INSPECTOR_ALLOW_RUNS=true`. Without those, nothing can be changed or run no matter what your agent is asked to do — the check is in the handler, so it holds regardless of what the caller sends. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
 
-**Gated, never hidden.** Withholding a tool by not registering it makes it indistinguishable from one that does not exist, and an agent will then tell you this server *cannot* write — convincingly, with nothing to contradict it. That happened, and it wasted a session.
+**Gated, never hidden.** Every tool is listed whether or not its gate is open, and the permission check runs when the tool is called. A tool that is withheld from the listing is indistinguishable from one that does not exist, so an agent reading a short list concludes the capability is missing and tells you so — with nothing available to correct it. Here a gated call refuses, touches nothing, and names the variable to set.
 
-So every tool is registered and the check happens when it is called. The guarantee is unchanged, because it was never the registration doing the work: without the opt-in the handler refuses and nothing is touched. What changes is that the refusal is an instruction naming the variable to set, instead of a silence the caller has to interpret. Suite deletion stays unimplemented — that is the one case where absence is the right answer, since no setting should reach it.
+Visibility is not permission. The two are separate on purpose: the listing tells the agent what this server can do, the gate decides what it may do right now.
 
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}/` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
@@ -174,22 +186,22 @@ So every tool is registered and the check happens when it is called. The guarant
 
 **Writes are guarded.** Every mutating tool performs these four in order, and none can be turned off:
 
-1. compare `dateUpdated` across the whole `execute` chain against the last run — a red test whose module was edited *after* its last run is **stale, not broken**, and a fix diagnosed from that failure is diagnosed from a version that no longer exists. Imports nest up to ten levels, so the walk is bounded and detects cycles. On a real account this refused a test whose last run was July 2024 and whose definition was edited eighteen days later: still red on the dashboard two years on;
+1. compare `dateUpdated` across the whole `execute` chain against the last run — a red test whose module was edited *after* its last run is **stale, not broken**, and a fix diagnosed from that failure is diagnosed from a version that no longer exists. Imports nest up to ten levels, so the walk is bounded and detects cycles. On a real account this refused a test that had been red on the dashboard for well over a year, whose definition had been edited weeks after that last run;
 2. return the complete prior definition — on refusals too. Ghost Inspector keeps no version history of steps, so that object **is** your rollback;
 3. apply the change;
 4. re-read and diff twice over: that what was sent landed exactly, and that every field you did not send is untouched. `HTTP 200` proves neither.
 
-**Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed.
+**Writing also requires a concurrency token.** You state the `dateUpdated` you believe is current, and the write is refused if the record has moved since. A confirmation flag can be talked past by a persuaded model; a timestamp it has to have actually read cannot be guessed. `gi_get_test` returns that token alongside the definition, so reading the record is the ordinary first step of an edit rather than an obstacle.
 
-That last claim is only true because `gi_get_test` returns the token. In 0.1.1 no read tool did, and the refusal handed back the current value — so the only route to a write was to send a wrong token deliberately and harvest the right one from the rejection. A model asked to repair a test worked that out on its own and planned it, because nothing else was available. The guard proved nothing, and the normal flow started with a deliberate failure. **A guard that demands proof of a read has to ship with the read that supplies it.** A refusal still shows the current value, since that is part of diagnosing a real conflict, but it now sends you back to re-read and recompose rather than resend: replaying an edit built against a definition that is no longer stored overwrites whoever replaced it.
+A refusal reports the current value, because that is part of diagnosing a genuine conflict, and directs you to re-read and rebuild the change rather than resend it. Replaying an edit composed against a definition that is no longer stored would overwrite whatever replaced it.
 
 That token narrows the window rather than closing it. Ghost Inspector has no compare-and-swap, so the check is read-then-write on the client side: two writers who both read before either wrote will both pass. It catches acting on a copy you read minutes or days ago, which is the realistic case, not a genuine race.
 
-All four guards are verified against a live account, on a disposable clone that was created, written to, and deleted — the account was byte-identical afterward. That exercise found two defects the offline tests could not: Ghost Inspector normalises steps on write, so a naive round-trip diff cried "the write did not land" about a write that had landed perfectly; and the concurrency token was described as stronger than it is. A verifier that cries wolf is worse than none, because the next real warning gets ignored.
+All four guards are verified against a live account, on a disposable clone that was created, written to and deleted, leaving the account byte-identical afterwards. One behaviour that only surfaces there: Ghost Inspector normalises steps on write, filling in fields the caller omitted, so both sides are normalised before being compared. Without that, verification reports a difference on every write that landed perfectly.
 
 **Running a stored test is gated separately.** `gi_run_test` is the one tool that executes a test exactly as saved, with nothing truncated — so in most accounts it posts to production. It needs `GHOST_INSPECTOR_ALLOW_RUNS=true`, which `ALLOW_WRITES` does not imply: an edit is recoverable from the backup the write path returns, a submitted form is not recoverable at all. On top of that, a test that submits is refused unless you confirm on that call. The check inlines modules first, since a test whose steps are only `execute` calls hides its submit inside one, and a chain that cannot be fully expanded counts as submitting.
 
-Confirmation is asked for only where there is a consequence, which is the point — a flag every call needs is a flag every caller sets by reflex. Measured on a real lead-generation account, 31 of 40 tests would ask for it and 9 ran without; those 31 genuinely click a submit control.
+Confirmation is asked for only where there is a consequence, which is the point — a flag every call needs is a flag every caller sets by reflex. Measured across a sample of real tests, roughly three quarters asked for confirmation and the rest ran without it — the ones that asked genuinely click a submit control.
 
 **Validation does not submit anything.** `gi_validate_test` uses on-demand execution, which runs a definition and discards it, so nothing in your account changes. But it drives a real browser against a real URL, so two guards apply and neither can be turned off:
 
