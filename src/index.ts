@@ -2,9 +2,13 @@
 /**
  * ghost-inspector-mcp — MCP server entry point.
  *
- * Read-only unless GHOST_INSPECTOR_ALLOW_WRITES=true. Suite deletion is never
- * exposed: DELETE /suites/{id} cascades to every test in the suite with no
- * version history and no recycle bin.
+ * Every tool is registered and visible. Mutating tools refuse unless
+ * GHOST_INSPECTOR_ALLOW_WRITES=true and executing refuses unless
+ * GHOST_INSPECTOR_ALLOW_RUNS=true — enforced per call, so the answer to a
+ * caller without the opt-in is an instruction rather than an absence.
+ *
+ * Suite deletion is never exposed at any setting: DELETE /suites/{id} cascades
+ * to every test in the suite with no version history and no recycle bin.
  */
 
 import { readFileSync } from "node:fs";
@@ -33,10 +37,9 @@ const { version } = JSON.parse(
 ) as { version: string };
 
 // `instructions` is the only place the server can describe itself as a whole.
-// It matters most for the write gate: mutating tools are withheld by not being
-// registered, so a model that is not told they exist sees five tools and
-// concludes the server cannot write at all — a wrong answer it has no way to
-// check. State the gate here rather than opening it.
+// Every tool is listed, gated or not, so nothing has to be inferred from an
+// absence — that inference is exactly what went wrong before, when a model
+// concluded from a short tool list that this server could not write at all.
 const server = new McpServer(
   {
     name: "ghost-inspector",
@@ -46,12 +49,15 @@ const server = new McpServer(
   {
     instructions:
       "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
-      "READ TOOLS are always available. WRITE TOOLS (gi_update_test, gi_move_suite) are " +
-      "registered only when the operator sets GHOST_INSPECTOR_ALLOW_WRITES=true. If you " +
-      "do not see them, they are gated, not missing — call gi_whoami to read " +
-      "`writesEnabled`, and tell the user to set that variable and restart this server. " +
-      "You cannot enable it yourself, and no tool will ever accept a key or a flag as an " +
-      "argument.\n\n" +
+      "EVERY tool is listed, including the gated ones, so you never have to infer a " +
+      "capability from an absence. Reading needs nothing. Mutating (gi_update_test, " +
+      "gi_move_suite, gi_create_suite, gi_duplicate_test) needs " +
+      "GHOST_INSPECTOR_ALLOW_WRITES=true. Executing a stored test (gi_run_test) needs " +
+      "GHOST_INSPECTOR_ALLOW_RUNS=true, which the write variable does NOT imply. Call a " +
+      "gated tool without its variable and it refuses, changes nothing, and tells the user " +
+      "exactly what to set — relay that instead of concluding the server cannot do it. You " +
+      "cannot open either gate yourself, and no tool will ever accept a key or a flag as an " +
+      "argument. gi_whoami reports both gates.\n\n" +
       "Before proposing any edit, call gi_get_test: it returns the current definition and " +
       "the `dateUpdated` that gi_update_test requires as `expectedDateUpdated`. Do not " +
       "obtain that token by sending a wrong value and reading it off the refusal.\n\n" +
@@ -79,6 +85,52 @@ async function safeText(run: () => Promise<unknown>) {
   }
 }
 
+/**
+ * Wraps a gated handler so the tool is always visible and refuses in words.
+ *
+ * Every tool is registered unconditionally, including the ones that mutate or
+ * execute. Withholding them by not registering them makes a gated tool
+ * indistinguishable from one that does not exist, and the observed consequence
+ * was a model telling its user this server could not write at all — confidently,
+ * with nothing available to contradict it. Hiding a capability does not stop
+ * anyone asking for it; it only stops them being told how to enable it.
+ *
+ * 🔴 The guarantee is unchanged and lives here: an operator who has not opted
+ * in cannot mutate or execute anything, no matter what the calling model is
+ * persuaded to attempt. The check simply happens at call time rather than at
+ * registration, so the answer can be an instruction instead of an absence.
+ * `server.test.js` proves every gated tool refuses without its variable.
+ *
+ * @param allowed The gate's current state, re-read on every call.
+ * @param variable Environment variable that opens it.
+ * @param why What the operator is consenting to, and why it is separate.
+ */
+function gated(allowed: boolean, variable: string, why: string, run: () => Promise<unknown>) {
+  if (allowed) return safeText(run);
+  return Promise.resolve({
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `REFUSED: ${variable} is not set to "true", so this server will not do this.\n\n` +
+          `Nothing happened. ${why}\n\n` +
+          `This is the operator's decision and you cannot make it from a tool call. ` +
+          `Ask the user to set ${variable}=true in the environment that launches this ` +
+          `server, then restart it. For a Claude Code user that is:\n` +
+          `  claude mcp remove ghost-inspector -s user\n` +
+          `  claude mcp add ghost-inspector -s user -e ${variable}=true -- npx -y ghost-inspector-mcp\n` +
+          `Call gi_whoami afterwards to confirm the gate is open.`,
+      },
+    ],
+    isError: true,
+  });
+}
+
+const WHY_WRITES =
+  "Editing a Ghost Inspector test is permanent: there is no version history for steps and no recycle bin, so an operator opts in once, deliberately.";
+const WHY_RUNS =
+  "Running a stored test executes it against a real environment and can submit a real form. It is a separate decision from allowing edits, because an edit can be rolled back from the backup this server returns and a submission cannot.";
+
 interface Organization {
   _id: string;
   name?: string;
@@ -98,12 +150,12 @@ server.registerTool(
       "Confirms the configured API key works, lists the organizations it can " +
       "reach, and reports whether writing is enabled. Read-only and safe to call " +
       "first when diagnosing setup.\n\n" +
-      "🔴 Call this before concluding that this server cannot modify anything. " +
-      "The write tools (gi_update_test, gi_move_suite) are withheld by not being " +
-      "registered, so their absence from the tool list is indistinguishable from " +
-      "them not existing. `writesEnabled` is the authority: when it is false the " +
-      "operator must set GHOST_INSPECTOR_ALLOW_WRITES=true and restart this " +
-      "server. It cannot be turned on from a tool call.\n\n" +
+      "🔴 Call this before concluding that this server cannot modify anything. Every " +
+      "tool is registered whether or not its gate is open, so a tool being listed " +
+      "says nothing about whether it will run. `writesEnabled` and `runsEnabled` " +
+      "are the authority — GHOST_INSPECTOR_ALLOW_WRITES and GHOST_INSPECTOR_ALLOW_RUNS. " +
+      "When one is false the operator must set the matching " +
+      "variable and restart this server; it cannot be turned on from a tool call.\n\n" +
       "Returns each organization's id — export the one you want as " +
       "GHOST_INSPECTOR_ORG_ID to enable on-demand validation runs.",
     inputSchema: {},
@@ -114,6 +166,11 @@ server.registerTool(
       const orgs = await request<Organization[]>("GET", "organizations");
       return {
         writesEnabled: writesAllowed(),
+        runsEnabled: runsAllowed(),
+        gates: {
+          writes: "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test",
+          runs: "GHOST_INSPECTOR_ALLOW_RUNS — gi_run_test. Not implied by the write gate.",
+        },
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
       };
     }),
@@ -399,8 +456,10 @@ server.registerTool(
 //   2. return the complete prior definition as the caller's rollback,
 //   3. apply the change,
 //   4. re-GET and diff against what was sent.
-if (writesAllowed()) {
-  server.registerTool(
+// Registered unconditionally. See `gated` above: the write gate is enforced
+// per call so a model can be told how to open it, instead of concluding the
+// capability does not exist.
+server.registerTool(
     "gi_update_test",
     {
       title: "Ghost Inspector: update a test, behind four guards",
@@ -447,7 +506,7 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
-      safeText(() =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         updateTest({
           testId,
           expectedDateUpdated,
@@ -485,7 +544,9 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ suiteId, folderId, expectedCurrentFolder }) =>
-      safeText(() => moveSuite({ suiteId, folderId, expectedCurrentFolder })),
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        moveSuite({ suiteId, folderId, expectedCurrentFolder }),
+      ),
   );
 
   server.registerTool(
@@ -521,7 +582,9 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ name, organization, folder, allowDuplicateName }) =>
-      safeText(() => createSuite({ name, organization, folder, allowDuplicateName })),
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        createSuite({ name, organization, folder, allowDuplicateName }),
+      ),
   );
 
   server.registerTool(
@@ -562,18 +625,18 @@ if (writesAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ sourceTestId, name, suiteId, keepSchedule }) =>
-      safeText(() => duplicateTest({ sourceTestId, name, suiteId, keepSchedule })),
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        duplicateTest({ sourceTestId, name, suiteId, keepSchedule }),
+      ),
   );
 
   // Deliberately absent: suite deletion. DELETE /suites/{id}/ exists and
-  // cascades to every test inside, with no version history and no recycle bin.
-}
+// cascades to every test inside, with no version history and no recycle bin.
 
 // Executing a stored test sits behind its OWN gate. An operator who allowed
 // writes has not thereby allowed this: an edit is recoverable from the backup
 // the write path returns, a submitted form is not recoverable at all.
-if (runsAllowed()) {
-  server.registerTool(
+server.registerTool(
     "gi_run_test",
     {
       title: "Ghost Inspector: run a stored test for real",
@@ -618,9 +681,10 @@ if (runsAllowed()) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ testId, confirmSubmit, timeoutMs }) =>
-      safeText(() => runTest({ testId, confirmSubmit, timeoutMs })),
+      gated(runsAllowed(), "GHOST_INSPECTOR_ALLOW_RUNS", WHY_RUNS, () =>
+        runTest({ testId, confirmSubmit, timeoutMs }),
+      ),
   );
-}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

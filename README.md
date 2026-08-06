@@ -6,7 +6,7 @@ An [MCP](https://modelcontextprotocol.io) server for the [Ghost Inspector](https
 
 ## Status
 
-Twelve tools: seven that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
+Twelve tools, all of them always visible: seven that only read, four that write, and one that runs a test for real and are registered only if you opt in. The table below is a map of the surface — each tool's own description, which is what your agent actually reads, is where the detail and the gotchas live.
 
 | Tool | Writes? | What it does |
 |---|---|---|
@@ -23,7 +23,7 @@ Twelve tools: seven that only read, four that write, and one that runs a test fo
 | `gi_run_test` | **runs** | Executes a test exactly as saved and waits for the verdict. Its own gate, separate from writes. A test that submits a form is refused unless you confirm per call. |
 | `gi_duplicate_test` | **yes** | Copies a test, places it in a suite and renames it in one call. **This is the only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
 
-The four write tools are registered **only** when `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`. If your agent tells you this server cannot modify anything, it is reading an empty tool list: ask it to call `gi_whoami` and check `writesEnabled`.
+Every tool is listed whether or not its gate is open. The four write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is — a refusal changes nothing and tells you which variable to set. `gi_whoami` reports both.
 
 **Not included, on purpose.** Any deletion: `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent. Deleting a test is left out for the same reason — there is no version history to restore from.
 
@@ -144,7 +144,9 @@ This server will **never**:
 
 **Read-only unless you opt in.** Mutating tools are only registered when `GHOST_INSPECTOR_ALLOW_WRITES=true`. If you have not opted in, nothing can be changed no matter what your agent is asked to do. Every tool also declares MCP annotations (`readOnlyHint`, `destructiveHint`), so a client that gates permissions on them sees the same posture the server enforces — including that `gi_validate_test` is *not* marked read-only, because driving a real browser against a real URL is a side effect even when nothing is saved.
 
-**The gate announces itself.** Withholding a tool by not registering it makes it indistinguishable from a tool that does not exist, so an agent will tell you this server *cannot* write and be entirely convincing about it. The server states the gate in its handshake instructions, and `gi_whoami` reports `writesEnabled`. If your agent claims writing is impossible, ask it to call `gi_whoami`. The answer is never to register the write tools and reject the call later — that swaps a guarantee for a promise.
+**Gated, never hidden.** Withholding a tool by not registering it makes it indistinguishable from one that does not exist, and an agent will then tell you this server *cannot* write — convincingly, with nothing to contradict it. That happened, and it wasted a session.
+
+So every tool is registered and the check happens when it is called. The guarantee is unchanged, because it was never the registration doing the work: without the opt-in the handler refuses and nothing is touched. What changes is that the refusal is an instruction naming the variable to set, instead of a silence the caller has to interpret. Suite deletion stays unimplemented — that is the one case where absence is the right answer, since no setting should reach it.
 
 **Suite deletion is not exposed, by design.** `DELETE /suites/{id}/` cascades to every test in the suite, with no version history and no recycle bin. That stays a deliberate `curl` by someone who knows what they are doing.
 
