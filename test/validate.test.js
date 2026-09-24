@@ -509,3 +509,13 @@ test("blocked requests come back without query strings, deduplicated and capped"
   assert.deepEqual(read.blockedRequests.slice(0, 2), ["fetch POST https://example.com/collect (2 attempts)", "xhr POST /lead"]);
   assert.ok(!JSON.stringify(read.blockedRequests).includes("jane"), "no query string survives");
 });
+
+test("a plan with no click still arms the tripwire before its first step", async () => {
+  const { steps } = await expandSteps(
+    [{ command: "assign", target: "#email", value: "jane@example.com" }, { command: "assign", target: "#agree", value: "true" }],
+    async () => ({ name: "", steps: [] }),
+  );
+  const { sent, map } = injectGuards(steps);
+  assert.equal(map.filter((m) => m.kind === "probe").length, 0);
+  assert.match(sent[0].condition, /HTMLFormElement\.prototype\.submit/, "the first step's own condition arms it");
+});

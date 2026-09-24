@@ -138,15 +138,17 @@ export function probeScript(selectors: string[], planIndex: number): string {
 }
 
 /**
- * The condition every step carries: false once a probe has stopped the run.
+ * The condition every step carries: arms the tripwire on the current page, and is false once a probe has stopped the run.
  *
  * @return A script returning true while the run may go on.
  */
 export function stopCondition(): string {
   return [
+    `var g = ${STATE};`,
+    `try { (${ARM_SOURCE})(g); } catch (e) {}`,
     `var stored = null;`,
     `try { stored = window.sessionStorage.getItem("__giGuardStop"); } catch (e) {}`,
-    `return !((window.__giGuard && window.__giGuard.stop) || stored);`,
+    `return !(g.stop || stored);`,
   ].join("\n");
 }
 

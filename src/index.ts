@@ -485,10 +485,11 @@ server.registerTool(
       "be resolved from the top document; every step is gated on that stop. " +
       "Accepted false positive: a type=submit \"Continue\" inside a form stops " +
       "the run.\n" +
-      "(C) Tripwire: the same probe blocks submit events, form.submit(), non-GET " +
-      "fetch and XHR, and sendBeacon, and `guard.blockedRequests` lists them. " +
-      "It does not stop the run. Residual gaps: a script that saved window.fetch " +
-      "before the probe ran, and data sent by a GET (a pixel or a navigation).\n" +
+      "(C) Tripwire: armed before every step on every page, click or not, it " +
+      "blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, " +
+      "and `guard.blockedRequests` lists them. It does not stop the run. " +
+      "Residual gaps: a script that saved window.fetch before the page's first " +
+      "step ran, and data sent by a GET (a pixel or a navigation).\n" +
       "Step numbers in `plan`, `steps` and `guard` count plan steps; the injected " +
       "ones never shift them. There is no way to make this tool submit; that " +
       "stays a deliberate curl.\n\n" +

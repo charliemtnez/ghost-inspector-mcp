@@ -1069,9 +1069,12 @@ async function runValidation(
     }
     if (shared.guard.probedClicks > 0) {
       notes.push(
-        `Each of the ${shared.guard.probedClicks} click(s) is probed in the browser first: the run stops if the element is a form's submit control, a non-field control inside a form, or cannot be resolved from the top document. A tripwire also blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them. It cannot see a script that saved window.fetch before the probe ran, or data sent by a GET (a pixel or a navigation).`,
+        `Each of the ${shared.guard.probedClicks} click(s) is probed in the browser first: the run stops if the element is a form's submit control, a non-field control inside a form, or cannot be resolved from the top document.`,
       );
     }
+    notes.push(
+      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch before the page's first step ran, or data sent by a GET (a pixel or a navigation).",
+    );
     if (expansion.modules.length > 0) {
       notes.push(
         `${expansion.modules.length} module(s) were inlined before guarding, ${expansion.depth} level(s) deep. Guarding the definition as written would have missed a submit hidden inside a module.`,

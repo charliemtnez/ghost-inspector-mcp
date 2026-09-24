@@ -174,3 +174,14 @@ test("with sessionStorage denied, the stop still holds on the page and never ski
   assert.equal(p.run(probeScript(["#go"], 4)), "plan step 4: a form's submit button");
   assert.equal(p.run(stopCondition()), false);
 });
+
+test("the tripwire is armed before every step, not only before a click", async () => {
+  // An assign whose input handler posts the lead has no click to probe.
+  const p = page();
+  assert.equal(p.run(stopCondition()), true, "the step may run");
+  await assert.rejects(p.env.window.fetch("https://example.com/lead", { method: "POST" }), "and what it sends is blocked");
+  assert.equal(p.listeners.filter((l) => l.type === "submit").length, 1);
+  p.run(stopCondition());
+  assert.equal(p.listeners.filter((l) => l.type === "submit").length, 1, "still armed once per page");
+  assert.deepEqual(JSON.parse(p.run(logScript())).blocked, ["fetch POST https://example.com/lead"]);
+});
