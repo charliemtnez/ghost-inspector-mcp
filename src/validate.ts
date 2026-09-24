@@ -555,6 +555,30 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
 }
 
 /**
+ * Replaces every private variable's value with "(private)" in every string of a report.
+ *
+ * @param value The report, or any part of it.
+ * @param vars The variables the run was resolved with.
+ * @return The same shape, private values masked.
+ */
+export function maskPrivate<T>(value: T, vars: ReadonlyMap<string, VariableValue>): T {
+  const hidden = [...vars.values()]
+    .filter((entry) => entry.private && entry.value !== "")
+    .map((entry) => entry.value)
+    .sort((a, b) => b.length - a.length);
+  if (hidden.length === 0) return value;
+  const mask = (item: unknown): unknown => {
+    if (typeof item === "string") return hidden.reduce((text, secret) => text.split(secret).join("(private)"), item);
+    if (Array.isArray(item)) return item.map(mask);
+    if (item && typeof item === "object") {
+      return Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, mask(entry)]));
+    }
+    return item;
+  };
+  return mask(value) as T;
+}
+
+/**
  * A stored `variables` array, or undefined when the record has none.
  *
  * @param value A record's `variables` field.
@@ -639,6 +663,19 @@ export function outcomesOf(resultSteps: Array<Record<string, unknown>>, sent: Ex
  * @throws {RunTimeoutError} when the run does not finish inside the window.
  */
 export async function validateTest(options: ValidateOptions): Promise<ValidationReport> {
+  const { report, vars } = await runValidation(options);
+  return maskPrivate(report, vars);
+}
+
+/**
+ * validateTest's body, returning the variables alongside so every path can be masked in one place.
+ *
+ * @param options Exactly one of `testId` or `definition`.
+ * @return The unmasked report and the variables it was resolved with.
+ */
+async function runValidation(
+  options: ValidateOptions,
+): Promise<{ report: ValidationReport; vars: ReadonlyMap<string, VariableValue> }> {
   if ((options.testId && options.definition) || (!options.testId && !options.definition)) {
     throw new Error(
       "Pass exactly one of testId (validate an existing test) or definition (validate an ad-hoc definition).",
@@ -797,18 +834,20 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   };
 
   const idle = { outcome: null, settingsCheck: null, firstFailure: null, steps: [], evidence: null };
+  const vars = prepared.vars;
   if (prepared.refusal !== null) {
-    return {
+    const report: ValidationReport = {
       ...shared,
       ...idle,
       refusedBecause: "a variable has no value",
       executed: false,
       notes: [prepared.refusal, ...guardNotes()],
     };
+    return { report, vars };
   }
 
   if (options.dryRun) {
-    return {
+    const report: ValidationReport = {
       ...shared,
       ...idle,
       executed: false,
@@ -818,6 +857,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
         "`plan` is exactly what a real run would execute, in order.",
       ],
     };
+    return { report, vars };
   }
 
   const runOrg = requireOrgId();
@@ -841,7 +881,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     ),
   ];
 
-  return {
+  const report: ValidationReport = {
     ...shared,
     executed: true,
     outcome: {
@@ -860,4 +900,5 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     evidence: evidenceOf(result, false),
     notes,
   };
+  return { report, vars };
 }

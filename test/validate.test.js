@@ -14,6 +14,7 @@ import {
   applyGuard,
   expandSteps,
   findSubmit,
+  maskPrivate,
   outcomesOf,
   planOf,
   prepareRun,
@@ -315,4 +316,20 @@ test("an open step shows where it goes and a long script is cut, with its length
   );
   assert.equal(extracted.extracted, "101");
   assert.equal(extracted.valueLength, script.length);
+});
+
+test("a private variable's value never reaches a validation report", async () => {
+  const hidden = "fixture-private-value";
+  const run = await prepared({
+    startUrl: "https://example.com/{{pin}}",
+    steps: [{ command: "assign", target: "#pin-{{pin}}", value: "{{pin}}" }, { command: "click", target: "#{{pin}} .submit" }],
+    suite: { variables: [{ name: "pin", value: hidden, private: true }] },
+  });
+  assert.equal(run.body.steps[0].value, hidden, "the browser still receives it");
+  const report = maskPrivate(
+    { plan: planOf(run.toRun), startUrl: run.resolution.startUrl, guard: run.guard, steps: outcomesOf([{ command: "assign", target: `#pin-${hidden}`, passing: true }], run.toRun) },
+    run.vars,
+  );
+  assert.ok(!JSON.stringify(report).includes(hidden), "not in the plan, the start URL, the guard or the outcomes");
+  assert.equal(report.plan[0].value, "(private)");
 });
