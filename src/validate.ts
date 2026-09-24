@@ -48,7 +48,10 @@ const SUBMIT_KEY = /^(enter|return|\\n|\\r|13)$/i;
 
 export interface ExpandedStep {
   command: string;
+  /** For reading and matching: a fallback array appears as its JSON. */
   target: string;
+  /** The target exactly as authored, a string or a fallback array. This is what gets sent. */
+  authoredTarget: string | Array<Record<string, unknown>>;
   value: string;
   variableName: string;
   condition: string | null;
@@ -157,6 +160,7 @@ async function expand(
         command,
         // A target may be an array of fallback selectors, tried in order.
         target: Array.isArray(target) ? JSON.stringify(target) : str(target),
+        authoredTarget: Array.isArray(target) ? (target as Array<Record<string, unknown>>) : str(target),
         value: str(step["value"]),
         variableName: str(step["variableName"]),
         condition: andConditions(inherited, own),
