@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { summarizeHistory } from "../dist/history.js";
+import { groupFailures, summarizeHistory } from "../dist/history.js";
 
 /**
  * A result, newest first like the API returns them.
@@ -42,4 +42,20 @@ test("a green latest run has no current streak", () => {
   const history = summarizeHistory([run(0, true), run(1, false)], true);
   assert.equal(history.firstFail, null);
   assert.equal(history.lastPass.resultId, "r0");
+});
+
+test("failures that began together are grouped, however far apart their suites are", () => {
+  /** One red test's onset. */
+  const onset = (id, suite, at, error, target) => ({ id, name: id, suite, onset: at, error, target });
+  const groups = groupFailures([
+    onset("c", "Z", "2026-09-14T21:15:00Z", 'Element "#go" not found after 3000ms', "#go"),
+    onset("a", "X", "2026-09-14T12:35:00Z", 'Element "#submit" not found after 1500ms', "#go"),
+    onset("d", "X", "2026-09-17T09:00:00Z", "Timeout", "#other"),
+    onset("b", "Y", "2026-09-14T14:00:00Z", "JavaScript evaluated to false", "#go"),
+  ], 12);
+  assert.deepEqual(groups.map((g) => g.tests.map((t) => t.id)), [["a", "b", "c"], ["d"]]);
+  assert.equal(groups[0].start, "2026-09-14T12:35:00Z");
+  assert.equal(groups[0].end, "2026-09-14T21:15:00Z");
+  assert.deepEqual(groups[0].commonErrors[0], { text: "Element … not found after Nms", count: 2 }, "numbers and quoted text normalised");
+  assert.deepEqual(groups[0].commonTargets[0], { text: "#go", count: 3 });
 });

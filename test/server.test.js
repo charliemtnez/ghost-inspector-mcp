@@ -18,6 +18,7 @@ import path from "node:path";
 const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
 const READ_ONLY = [
+  "gi_failure_groups",
   "gi_find_tests",
   "gi_get_test",
   "gi_inventory",

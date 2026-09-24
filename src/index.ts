@@ -25,7 +25,7 @@ import { getTest, readBatch } from "./detail.js";
 import { findTests } from "./find.js";
 import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
-import { testHistory } from "./history.js";
+import { failureGroups, testHistory } from "./history.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
@@ -498,6 +498,33 @@ server.registerTool(
     annotations: READ_ONLY,
   },
   async ({ testId, runs }) => safeText(() => testHistory({ testId, runs })),
+);
+
+server.registerTool(
+  "gi_failure_groups",
+  {
+    title: "Ghost Inspector: red tests grouped by when they started failing",
+    description:
+      "Read-only. For every red test (modules excluded), finds its onset, the first " +
+      "failure after its last green run, and groups onsets that follow each other " +
+      "within `windowHours`, across suites and folders. Many tests going red within " +
+      "hours usually share one cause: a deploy, a shared module, a page change. Each " +
+      "group lists its tests with ids and the most common errors and targets, with " +
+      "numbers and quoted text normalised.\n\n" +
+      "A red test with no green run within `maxRunsPerTest` goes to `onsetUnknown` " +
+      "rather than being guessed. Costs one request per 50 runs per red test; narrow " +
+      "with folder or suite on a large account. Staleness is not considered: use " +
+      "gi_stale_tests for that.",
+    inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name."),
+      suite: z.string().optional().describe("Suite id, or part of its name."),
+      windowHours: z.number().positive().max(720).optional().describe("Largest gap between consecutive onsets in one group. Default 12."),
+      maxRunsPerTest: z.number().int().min(1).max(500).optional().describe("How far back to look for a green run per test. Default 200."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ folder, suite, windowHours, maxRunsPerTest }) =>
+    safeText(() => failureGroups({ folder, suite, windowHours, maxRunsPerTest })),
 );
 
 server.registerTool(
