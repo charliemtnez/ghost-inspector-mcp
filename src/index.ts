@@ -28,6 +28,7 @@ import { type Steps } from "./graph.js";
 import { failureGroups, testHistory } from "./history.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
+import { acceptScreenshot, screenshotStatus } from "./screenshots.js";
 import { getStaleTests } from "./stale.js";
 import { planTest, validateTest, type ValidateOptions } from "./validate.js";
 import { getVacuousTests } from "./vacuous.js";
@@ -56,7 +57,7 @@ const server = new McpServer(
       "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
       "EVERY tool is listed, including the gated ones, so you never have to infer a " +
       "capability from an absence. Reading needs nothing. Mutating (gi_update_test, " +
-      "gi_move_suite, gi_create_suite, gi_duplicate_test) needs " +
+      "gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot) needs " +
       "GHOST_INSPECTOR_ALLOW_WRITES=true. Executing a stored test (gi_run_test) needs " +
       "GHOST_INSPECTOR_ALLOW_RUNS=true, which the write variable does NOT imply. Call a " +
       "gated tool without its variable and it refuses, changes nothing, and tells the user " +
@@ -194,7 +195,8 @@ server.registerTool(
         writesEnabled: writesAllowed(),
         runsEnabled: runsAllowed(),
         gates: {
-          writes: "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test",
+          writes:
+            "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot",
           runs: "GHOST_INSPECTOR_ALLOW_RUNS — gi_run_test. Not implied by the write gate.",
         },
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
@@ -528,6 +530,24 @@ server.registerTool(
 );
 
 server.registerTool(
+  "gi_screenshot_status",
+  {
+    title: "Ghost Inspector: screenshot comparison state of a test",
+    description:
+      "Read-only. The test's screenshot-comparison settings and its latest result's " +
+      "comparison: enabled, passing, the measured difference against the threshold, " +
+      "and three image URLs to look at: the current screenshot (`screenshotUrl`), " +
+      "the difference image (`diffUrl`) and the baseline it was compared with. " +
+      "`latestResult.id` is what gi_accept_screenshot takes as `expectedResultId`.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => screenshotStatus(testId)),
+);
+
+server.registerTool(
   "gi_vacuous_tests",
   {
     title: "Ghost Inspector: green tests that prove nothing",
@@ -856,6 +876,32 @@ server.registerTool(
           verbose,
         }),
       ),
+  );
+
+// Accepting replaces the baseline every later run is compared against, and the
+// API has no route back, so it sits behind the write gate and a token.
+server.registerTool(
+    "gi_accept_screenshot",
+    {
+      title: "Ghost Inspector: accept the latest screenshot as the new baseline",
+      description:
+        "Makes the latest result's screenshot the baseline that every later run of " +
+        "this test is compared against. 🔴 The API offers no way to restore an " +
+        "earlier baseline; the response returns `previousBaselineResult` so it can at " +
+        "least be found again.\n\n" +
+        "`expectedResultId` is required: the result whose screenshot you looked at, " +
+        "from gi_screenshot_status. The accept is refused if a newer run has landed " +
+        "since, or if the latest run is still going, so it can never bless an image " +
+        "nobody saw. After the accept the test is re-read, and `verification` shows " +
+        "`screenshotComparePassing` and whether `dateUpdated` moved.",
+      inputSchema: {
+        testId: z.string().describe("The 24-character test id."),
+        expectedResultId: z.string().describe("latestResult.id from gi_screenshot_status: the result whose screenshot you reviewed."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ testId, expectedResultId }) =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () => acceptScreenshot({ testId, expectedResultId })),
   );
 
   server.registerTool(

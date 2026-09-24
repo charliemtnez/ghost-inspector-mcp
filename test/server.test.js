@@ -25,6 +25,7 @@ const READ_ONLY = [
   "gi_module_usage",
   "gi_plan_test",
   "gi_propose_repair",
+  "gi_screenshot_status",
   "gi_stale_tests",
   "gi_test_history",
   "gi_test_result",
@@ -32,7 +33,7 @@ const READ_ONLY = [
   "gi_validate_test",
   "gi_whoami",
 ];
-const WRITE = ["gi_create_suite", "gi_duplicate_test", "gi_move_suite", "gi_update_test"];
+const WRITE = ["gi_accept_screenshot", "gi_create_suite", "gi_duplicate_test", "gi_move_suite", "gi_update_test"];
 
 /** Starts the server, asks for its tools over stdio, and returns their names. */
 async function listTools(env = {}) {
@@ -116,6 +117,7 @@ async function callTool(name, args = {}, env = {}) {
 }
 
 const GATED = [
+  ["gi_accept_screenshot", { testId: "a".repeat(24), expectedResultId: "b".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_update_test", { testId: "a".repeat(24), expectedDateUpdated: "x" }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_move_suite", { suiteId: "a".repeat(24), folderId: "b".repeat(24), expectedCurrentFolder: "c".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_create_suite", { name: "x" }, "GHOST_INSPECTOR_ALLOW_WRITES"],
