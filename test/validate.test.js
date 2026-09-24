@@ -492,3 +492,20 @@ test("a stored condition that submits is caught", async () => {
   );
   assert.equal(findSubmit(steps).index, 0);
 });
+
+test("blocked requests come back without query strings, deduplicated and capped", async () => {
+  // Observed live: a real page's analytics produced 17 blocked POSTs whose
+  // query strings ran to kilobytes and carried page data into the report.
+  const { sent, map } = injectGuards(await clickPlan());
+  const blocked = [
+    "fetch POST https://example.com/collect?cid=1&email=jane%40example.com",
+    "fetch POST https://example.com/collect?cid=2",
+    "xhr POST /lead#frag",
+    ...Array.from({ length: 30 }, (_, i) => `sendBeacon POST https://example.com/b${i}?x=1`),
+  ];
+  const read = readGuardedResult(sent.map((s) => ran(s, true)), { giGuardLog: JSON.stringify({ stopped: null, blocked }) }, sent, map);
+  assert.equal(read.blockedRequestCount, 33);
+  assert.equal(read.blockedRequests.length, 20);
+  assert.deepEqual(read.blockedRequests.slice(0, 2), ["fetch POST https://example.com/collect (2 attempts)", "xhr POST /lead"]);
+  assert.ok(!JSON.stringify(read.blockedRequests).includes("jane"), "no query string survives");
+});

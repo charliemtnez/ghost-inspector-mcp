@@ -400,7 +400,12 @@ export function readGuardedResult(
   extractions: Record<string, unknown>,
   sent: ExpandedStep[],
   map: SentStep[],
-): { outcomes: StepOutcome[]; runtimeStop: string | null; blockedRequests: string[] | null } {
+): {
+  outcomes: StepOutcome[];
+  runtimeStop: string | null;
+  blockedRequests: string[] | null;
+  blockedRequestCount: number | null;
+} {
   const raw = outcomesOf(resultSteps, sent);
   const stopEntry = map.findIndex(
     (entry) => entry.kind === "probe" && typeof extractions[`giGuardProbe${entry.planIndex}`] === "string" &&
@@ -436,22 +441,48 @@ export function readGuardedResult(
     outcomes[entry.planIndex] = { ...outcome, sequence: entry.planIndex, status };
   }
 
-  let blockedRequests: string[] | null = null;
+  let blocked: string[] | null = null;
   const log = extractions["giGuardLog"];
   if (typeof log === "string") {
     try {
       const parsed = JSON.parse(log) as { blocked?: unknown };
-      blockedRequests = Array.isArray(parsed.blocked) ? parsed.blocked.map(String) : [];
+      blocked = Array.isArray(parsed.blocked) ? parsed.blocked.map(String) : [];
     } catch {
-      blockedRequests = null;
+      blocked = null;
     }
   }
+  const summary = blocked === null ? null : summarizeBlocked(blocked);
   for (const [i, entry] of map.entries()) {
     const step = sent[i];
     if (entry.kind !== "step" || outcomes[entry.planIndex] || !step) continue;
     outcomes[entry.planIndex] = { sequence: entry.planIndex, command: step.command, target: step.target, status: "not reached" };
   }
-  return { outcomes, runtimeStop, blockedRequests };
+  return {
+    outcomes,
+    runtimeStop,
+    blockedRequests: summary?.entries ?? null,
+    blockedRequestCount: summary?.count ?? null,
+  };
+}
+
+const BLOCKED_CAP = 20;
+
+/**
+ * The tripwire's log for a report: query strings and fragments dropped, repeats folded, at most 20 lines.
+ *
+ * @param blocked Entries as the log recorded them: "<kind> <METHOD> <url>".
+ * @return The lines to show, and how many attempts there were in all.
+ */
+function summarizeBlocked(blocked: string[]): { entries: string[]; count: number } {
+  const counts = new Map<string, number>();
+  for (const entry of blocked) {
+    const key = entry.replace(/[?#]\S*/, "");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const entries = [...counts]
+    .slice(0, BLOCKED_CAP)
+    .map(([key, times]) => (times > 1 ? `${key} (${times} attempts)` : key));
+  return { entries, count: blocked.length };
 }
 
 export interface StepOutcome {
@@ -546,8 +577,10 @@ export interface ReportGuard {
   probedClicks: number;
   /** Layer B: why the probe stopped the run, or null when it did not (or nothing ran). */
   runtimeStop: string | null;
-  /** Layer C: requests the tripwire blocked, or null when its log step never ran. */
+  /** Layer C: requests the tripwire blocked, without query strings, repeats folded, at most 20; null when its log step never ran. */
   blockedRequests: string[] | null;
+  /** Every blocked attempt, including those past the cap. */
+  blockedRequestCount: number | null;
 }
 
 export interface ValidateOptions {
@@ -1014,6 +1047,7 @@ async function runValidation(
       probedClicks: prepared.map.filter((entry) => entry.kind === "probe").length,
       runtimeStop: null,
       blockedRequests: null,
+      blockedRequestCount: null,
     } as ReportGuard,
     plan,
   };
@@ -1117,6 +1151,7 @@ async function runValidation(
   const stepOutcomes = guarded.outcomes;
   shared.guard.runtimeStop = guarded.runtimeStop;
   shared.guard.blockedRequests = guarded.blockedRequests;
+  shared.guard.blockedRequestCount = guarded.blockedRequestCount;
   const guardRun: string[] = [];
   if (guarded.runtimeStop) {
     guardRun.push(
@@ -1124,7 +1159,9 @@ async function runValidation(
     );
   }
   if (guarded.blockedRequests && guarded.blockedRequests.length > 0) {
-    guardRun.push(`🔴 The tripwire blocked ${guarded.blockedRequests.length} attempt(s) to send data: ${guarded.blockedRequests.join("; ")}.`);
+    guardRun.push(
+      `🔴 The tripwire blocked ${guarded.blockedRequestCount} attempt(s) to send data; see guard.blockedRequests. The page's own analytics and form scripts are blocked too, so a step that depends on one of those calls can fail here and pass in a real run.`,
+    );
   }
   if (guarded.blockedRequests === null) {
     guardRun.push("The guard's closing log did not run, because the run ended early, so what it blocked is unknown.");
