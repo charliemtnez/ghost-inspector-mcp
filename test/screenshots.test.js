@@ -19,6 +19,12 @@ test("accepting a screenshot you have not looked at is refused", () => {
   assert.equal(acceptRefusal(latest, "r2"), null, "the result that was looked at is the latest, finished");
 });
 
+test("there is nothing to accept when the comparison passed or did not run", () => {
+  // Ghost Inspector answers VALIDATION_ERROR "Unable to accept screenshot" then.
+  assert.match(acceptRefusal({ ...latest, screenshotComparePassing: true }, "r2"), /nothing to accept/);
+  assert.match(acceptRefusal({ ...latest, screenshotCompareEnabled: false }, "r2"), /did not run/);
+});
+
 test("the status shows the current image, the diff and the baseline side by side", () => {
   const status = describeScreenshots(
     { _id: "t", name: "T", screenshotCompareEnabled: null, screenshotComparePassing: false, screenshotCompareThreshold: 0.1 },

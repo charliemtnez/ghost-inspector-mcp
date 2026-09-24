@@ -42,6 +42,10 @@ export function acceptRefusal(latest: RunResult | null, expectedResultId: string
     return `the latest result is ${String(latest._id)}, not ${expectedResultId}: accepting now would bless a screenshot you have not looked at`;
   }
   if (latest.passing !== true && latest.passing !== false) return "the latest run is still running, so its screenshot is not final";
+  if (latest["screenshotCompareEnabled"] !== true) return "screenshot comparison did not run on the latest result";
+  if (latest["screenshotComparePassing"] === true) {
+    return "nothing to accept: the latest comparison passed, so its screenshot already matches the baseline";
+  }
   return null;
 }
 
@@ -64,6 +68,8 @@ export function describeScreenshots(
   ];
   if (latest && latest["screenshotCompareEnabled"] !== true) {
     notes.push("Screenshot comparison did not run on the latest result, so there is nothing to accept.");
+  } else if (latest && latest["screenshotComparePassing"] === true) {
+    notes.push("The latest comparison passed, so there is nothing to accept.");
   }
   return {
     test: {
@@ -114,7 +120,7 @@ export async function screenshotStatus(testId: string): Promise<ScreenshotStatus
 }
 
 /**
- * Accepts the latest result's screenshot as the new baseline, only if it is the one the caller looked at.
+ * Accepts the latest result's screenshot as the new baseline, only if it is the one the caller looked at; does not move dateUpdated.
  *
  * @param options The test, and the result id whose screenshot was reviewed.
  * @return What changed, the baseline it replaced, and the re-read.

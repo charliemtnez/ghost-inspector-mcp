@@ -891,9 +891,11 @@ server.registerTool(
         "least be found again.\n\n" +
         "`expectedResultId` is required: the result whose screenshot you looked at, " +
         "from gi_screenshot_status. The accept is refused if a newer run has landed " +
-        "since, or if the latest run is still going, so it can never bless an image " +
-        "nobody saw. After the accept the test is re-read, and `verification` shows " +
-        "`screenshotComparePassing` and whether `dateUpdated` moved.",
+        "since, if the latest run is still going, or if its comparison passed or did " +
+        "not run (there is nothing to accept then), so it can never bless an image " +
+        "nobody saw. After the accept the test is re-read and `verification` shows " +
+        "`screenshotComparePassing`. Accepting does not move `dateUpdated`, so it does " +
+        "not invalidate a token you already hold.",
       inputSchema: {
         testId: z.string().describe("The 24-character test id."),
         expectedResultId: z.string().describe("latestResult.id from gi_screenshot_status: the result whose screenshot you reviewed."),
