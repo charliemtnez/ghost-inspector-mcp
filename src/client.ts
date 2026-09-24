@@ -10,6 +10,7 @@
  */
 
 import { ConfigError, redact, requireApiKey } from "./config.js";
+import { isSettled } from "./results.js";
 
 const BASE_URL = "https://api.ghostinspector.com/v1";
 
@@ -158,11 +159,15 @@ export async function pollResult(
   const intervalMs = options.intervalMs ?? 6_000;
   const deadline = Date.now() + timeoutMs;
 
+  let settleChecks = 0;
   for (;;) {
     const result = await request<RunResult>("GET", `results/${resultId}`);
-    if (result.passing !== null && result.passing !== undefined) return result;
-    if (Date.now() >= deadline) throw new RunTimeoutError(resultId, timeoutMs);
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const finished = result.passing !== null && result.passing !== undefined;
+    // The verdict can land before the timing fields: a couple more reads, then take it as is.
+    if (finished && (isSettled(result) || settleChecks >= 2)) return result;
+    if (finished) settleChecks += 1;
+    if (!finished && Date.now() >= deadline) throw new RunTimeoutError(resultId, timeoutMs);
+    await new Promise((resolve) => setTimeout(resolve, finished ? Math.min(intervalMs, 3_000) : intervalMs));
   }
 }
 

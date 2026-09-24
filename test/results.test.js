@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { evidenceOf, executionTimeMs, stepsExecuted } from "../dist/results.js";
+import { evidenceOf, executionTimeMs, isSettled, stepsExecuted } from "../dist/results.js";
 
 test("a skipped or unreached step is not counted as executed", () => {
   // A step whose condition was false, and every step after a failure, sits at
@@ -53,4 +53,13 @@ test("the evidence a result carries comes back by name", () => {
   assert.deepEqual(evidence.urls, ["https://example.com/", "https://example.com/thanks"]);
   assert.deepEqual(evidence.extractions, { formSelector: "#lead" });
   assert.deepEqual(evidenceOf({}, false).urls, [], "absent evidence is empty, never a crash");
+});
+
+test("a verdict without its timing is not yet the finished record", () => {
+  // Observed live: a polled on-demand result had passing set while executionTime
+  // and dateExecutionFinished were still empty; a moment later both were filled.
+  assert.equal(isSettled({ passing: true }), false);
+  assert.equal(isSettled({ passing: true, executionTime: 59165 }), true);
+  assert.equal(isSettled({ passing: false, dateExecutionStarted: "2026-09-24T10:00:00Z", dateExecutionFinished: "2026-09-24T10:01:00Z" }), true);
+  assert.equal(isSettled({ passing: null, executionTime: 1 }), false, "no verdict is never settled");
 });

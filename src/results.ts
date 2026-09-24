@@ -51,6 +51,17 @@ export function executionTimeMs(result: Record<string, unknown>): number | null 
 }
 
 /**
+ * Whether a result is final: it has a verdict and its duration is known.
+ *
+ * @param result A result record.
+ * @return False while `passing` is null or the timing fields are still empty.
+ */
+export function isSettled(result: Record<string, unknown>): boolean {
+  const verdict = result["passing"] === true || result["passing"] === false;
+  return verdict && executionTimeMs(result) !== null;
+}
+
+/**
  * The screenshots, video, URLs, extractions and console output a result carries.
  *
  * @param result A result record.

@@ -9,7 +9,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { andConditions, applyGuard, expandSteps, findSubmit } from "../dist/validate.js";
+import {
+  andConditions,
+  applyGuard,
+  expandSteps,
+  findSubmit,
+  maskPrivate,
+  outcomesOf,
+  planOf,
+  prepareRun,
+  settingsCheck,
+  settingsFor,
+} from "../dist/validate.js";
 
 const S = (command, target = "", value = "", fromModule = null) => ({
   command, target, value, variableName: "", condition: null, optional: false, fromModule,
@@ -220,4 +231,105 @@ test("every inlined step knows which test owns it and where", async () => {
       ["root", "Root", 2, 2],
     ],
   );
+});
+
+// --- suite configuration and variables --------------------------------------
+
+/**
+ * prepareRun over a definition expanded with no modules.
+ * @param {object} over
+ */
+const prepared = async (over = {}) => {
+  const steps = over.steps ?? [{ command: "assertElementVisible", target: "body" }];
+  const expansion = await expandSteps(steps, async () => ({ name: "", steps: [] }), { id: "root", name: "Root" });
+  return prepareRun({ name: "Root", startUrl: "https://example.com/", test: null, suite: null, org: null, expansion, ...over });
+};
+
+test("an unresolved variable refuses before anything is sent", async () => {
+  const run = await prepared({ startUrl: "https://{{nope}}.example.com/" });
+  assert.equal(run.body, null, "no body means nothing can be POSTed");
+  assert.deepEqual(run.unresolved.map((u) => u.name), ["nope"]);
+  assert.match(run.refusal, /variables/);
+  const fine = await prepared({ startUrl: "https://{{sub}}.example.com/", variables: { sub: "www" } });
+  assert.equal(fine.body.startUrl, "https://www.example.com/");
+  assert.equal(fine.refusal, null);
+});
+
+test("a test's own setting beats its suite's", () => {
+  const { values, sources } = settingsFor(
+    { viewportSize: { width: 375, height: 667 }, browser: null },
+    { viewportSize: { width: 1280, height: 800 }, browser: "chrome", maxWaitDelay: 15000 },
+    {},
+  );
+  assert.deepEqual(values.viewportSize, { width: 375, height: 667 });
+  assert.equal(sources.viewportSize, "test");
+  assert.equal(values.browser, "chrome");
+  assert.equal(sources.browser, "suite");
+  assert.equal(values.maxWaitDelay, 15000);
+});
+
+test("a caller override beats the test and the suite", () => {
+  const { values, sources } = settingsFor(
+    { viewportSize: { width: 375, height: 667 } },
+    { browser: "chrome" },
+    { viewport: "1024x768", browser: "firefox" },
+  );
+  assert.deepEqual(values.viewportSize, { width: 1024, height: 768 });
+  assert.equal(values.browser, "firefox");
+  assert.equal(sources.browser, "caller override");
+});
+
+test("the suite's user agent reaches the body", async () => {
+  const run = await prepared({ suite: { userAgent: "example-bot", httpAuthUsername: "jane", httpAuthPassword: "x" } });
+  assert.equal(run.body.userAgent, "example-bot");
+  assert.ok(!Object.keys(run.body).some((key) => key.startsWith("httpAuth")), "basic auth is never sent");
+  assert.ok(run.notes.some((note) => /basic auth/i.test(note)));
+});
+
+test("a setting the run did not honour is reported", () => {
+  const drift = settingsCheck(
+    { userAgent: "example-bot", browser: "chrome", viewportSize: { width: 1280, height: 800 } },
+    { userAgent: "Mozilla/5.0 Ghost Inspector", browser: "chrome-114", viewportSize: { width: 1280, height: 800 } },
+  );
+  assert.deepEqual(drift.map((d) => d.setting), ["userAgent"], "chrome-114 is chrome");
+});
+
+test("a setting echoed with its keys in another order is not drift", () => {
+  const drift = settingsCheck({ viewportSize: { width: 1280, height: 800 } }, { viewportSize: { height: 800, width: 1280 } });
+  assert.deepEqual(drift, []);
+});
+
+test("an open step shows where it goes and a long script is cut, with its length", async () => {
+  const script = `return ${"1 + ".repeat(100)}1;`;
+  const { steps } = await expandSteps(
+    [{ command: "open", value: "https://example.com/next" }, { command: "extractEval", value: script, variableName: "sum" }],
+    async () => ({ name: "", steps: [] }),
+  );
+  const plan = planOf(steps);
+  assert.equal(plan[0].value, "https://example.com/next");
+  assert.equal(plan[0].valueLength, undefined, "a short value is shown whole");
+  assert.equal(plan[1].value.length, 200);
+  assert.equal(plan[1].valueLength, script.length);
+  const [, extracted] = outcomesOf(
+    [{ command: "open", passing: true, value: "https://example.com/next" }, { command: "extractEval", passing: true, value: script, extracted: "101" }],
+    steps,
+  );
+  assert.equal(extracted.extracted, "101");
+  assert.equal(extracted.valueLength, script.length);
+});
+
+test("a private variable's value never reaches a validation report", async () => {
+  const hidden = "fixture-private-value";
+  const run = await prepared({
+    startUrl: "https://example.com/{{pin}}",
+    steps: [{ command: "assign", target: "#pin-{{pin}}", value: "{{pin}}" }, { command: "click", target: "#{{pin}} .submit" }],
+    suite: { variables: [{ name: "pin", value: hidden, private: true }] },
+  });
+  assert.equal(run.body.steps[0].value, hidden, "the browser still receives it");
+  const report = maskPrivate(
+    { plan: planOf(run.toRun), startUrl: run.resolution.startUrl, guard: run.guard, steps: outcomesOf([{ command: "assign", target: `#pin-${hidden}`, passing: true }], run.toRun) },
+    run.vars,
+  );
+  assert.ok(!JSON.stringify(report).includes(hidden), "not in the plan, the start URL, the guard or the outcomes");
+  assert.equal(report.plan[0].value, "(private)");
 });
