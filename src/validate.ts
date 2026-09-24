@@ -54,6 +54,13 @@ export interface ExpandedStep {
   optional: boolean;
   /** Name of the module this step was inlined from, when it was. */
   fromModule: string | null;
+  /** The test whose own step list holds this step: the root, or a module. */
+  ownerId: string;
+  ownerName: string;
+  /** Position in the owner's array, execute steps counted; not its stored `sequence`. */
+  indexInOwner: number;
+  /** Index of the root-level step that contributed this one. */
+  rootIndex: number;
 }
 
 export interface Loaded {
@@ -107,25 +114,40 @@ export interface Expansion {
 export async function expandSteps(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
+  root: { id: string; name: string } = { id: "", name: "" },
 ): Promise<Expansion> {
   const report = { modules: [] as string[], depth: 0, truncated: false, emptyExecutes: 0 };
-  const expanded = await expand(steps, load, 0, new Set(), null, null, report);
+  const expanded = await expand(steps, load, 0, new Set(), root, null, null, report);
   return { steps: expanded, ...report };
 }
 
+/**
+ * One level of expandSteps: inlines this list's execute steps, recursively.
+ *
+ * @param steps The list being flattened.
+ * @param load Reads one test's name and steps by id.
+ * @param depth Nesting level of this list; 0 is the root.
+ * @param path Module ids on the way here, for cycle detection.
+ * @param owner The test this list belongs to.
+ * @param rootIndex The root-level step being expanded, or null at the root itself.
+ * @param inherited Condition accumulated from the enclosing execute steps.
+ * @param report Counters shared across the whole expansion.
+ * @return The flattened steps.
+ */
 async function expand(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
   depth: number,
   path: Set<string>,
-  from: string | null,
+  owner: { id: string; name: string },
+  rootIndex: number | null,
   inherited: string | null,
   report: { modules: string[]; depth: number; truncated: boolean; emptyExecutes: number },
 ): Promise<ExpandedStep[]> {
   const out: ExpandedStep[] = [];
   report.depth = Math.max(report.depth, depth);
 
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
     const command = str(step["command"]);
     const own = typeof step["condition"] === "string" ? step["condition"] : null;
     if (command !== "execute") {
@@ -138,7 +160,11 @@ async function expand(
         variableName: str(step["variableName"]),
         condition: andConditions(inherited, own),
         optional: step["optional"] === true,
-        fromModule: from,
+        fromModule: depth > 0 ? owner.name : null,
+        ownerId: owner.id,
+        ownerName: owner.name,
+        indexInOwner: index,
+        rootIndex: rootIndex ?? index,
       });
       continue;
     }
@@ -168,7 +194,8 @@ async function expand(
         load,
         depth + 1,
         new Set([...path, id]),
-        module.name,
+        { id, name: module.name },
+        rootIndex ?? index,
         andConditions(inherited, own),
         report,
       )),
@@ -228,15 +255,14 @@ export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guar
 
   // Proving the submit control is reachable is the point of the whole run, so
   // the dropped step becomes an assertion rather than simply disappearing.
-  if (target) {
+  if (submitting && target) {
     kept.push({
+      ...submitting,
       command: "assertElementVisible",
-      target,
       value: "",
       variableName: "",
       condition: null,
       optional: false,
-      fromModule: submitting?.fromModule ?? null,
     });
   }
 
@@ -407,7 +433,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     configSource = viewport || browser ? "caller override" : "Ghost Inspector defaults";
   }
 
-  const expansion = await expandSteps(defined, load);
+  const expansion = await expandSteps(defined, load, { id: options.testId ?? "", name });
   const expanded = expansion.steps;
   const { steps: toRun, guard } = applyGuard(expanded);
 
