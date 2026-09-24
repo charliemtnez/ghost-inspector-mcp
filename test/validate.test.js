@@ -297,6 +297,7 @@ test("an unresolved variable refuses before anything is sent", async () => {
   assert.equal(run.body, null, "no body means nothing can be POSTed");
   assert.deepEqual(run.unresolved.map((u) => u.name), ["nope"]);
   assert.match(run.refusal, /variables/);
+  assert.match(run.refusal, /organization was not read/, "an unread organization is not reported as defining nothing");
   const fine = await prepared({ startUrl: "https://{{sub}}.example.com/", variables: { sub: "www" } });
   assert.equal(fine.body.startUrl, "https://www.example.com/");
   assert.equal(fine.refusal, null);

@@ -756,7 +756,8 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
       ? null
       : `Refused before anything was sent: ${unresolved.map((u) => `{{${u.name}}} in ${u.where}`).join("; ")} has no value. ` +
         "On-demand execution ignores custom variables and would run each as an empty string, which can still come back green. " +
-        `The suite defines: ${names(inputs.suite)}. The organization defines: ${names(inputs.org)}. ` +
+        `The suite defines: ${inputs.suite ? names(inputs.suite) : "nothing (no suite was given)"}. ` +
+        `${inputs.org ? `The organization defines: ${names(inputs.org)}.` : "The organization was not read."} ` +
         "Pass the missing ones as `variables` ({\"name\": \"value\"}), or give an ad-hoc definition a `suiteId`.";
 
   const params: Record<string, string> = {};
@@ -953,7 +954,7 @@ export async function planTest(options: Omit<ValidateOptions, "dryRun" | "verbos
     guard,
     plan,
     wouldRefuse: refusal === null ? null : maskPrivate(refusal, vars),
-    notes: notes.filter((note) => !note.startsWith("DRY RUN") && note !== refusal),
+    notes: notes.filter((note) => !note.startsWith("DRY RUN") && !note.startsWith("`plan` is exactly") && note !== refusal),
   };
 }
 
@@ -1106,7 +1107,7 @@ async function runValidation(
       );
     }
     notes.push(
-      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch before the page's first step ran, or data sent by a GET (a pixel or a navigation).",
+      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch or form.submit before the page's first step ran, a WebSocket, anything inside a child frame, or data sent by a GET (a pixel or a navigation).",
     );
     if (expansion.modules.length > 0) {
       notes.push(

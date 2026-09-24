@@ -645,8 +645,9 @@ server.registerTool(
       "(C) Tripwire: armed before every step on every page, click or not, it " +
       "blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, " +
       "and `guard.blockedRequests` lists them. It does not stop the run. " +
-      "Residual gaps: a script that saved window.fetch before the page's first " +
-      "step ran, and data sent by a GET (a pixel or a navigation).\n" +
+      "Residual gaps: a script that saved window.fetch or form.submit before the " +
+      "page's first step ran, a WebSocket, anything inside a child frame, and data " +
+      "sent by a GET (a pixel or a navigation).\n" +
       "Step numbers in `plan`, `steps` and `guard` count plan steps; the injected " +
       "ones never shift them. There is no way to make this tool submit; that " +
       "stays a deliberate curl.\n\n" +
@@ -738,7 +739,7 @@ server.registerTool(
     description:
       "Read-only. Returns exactly what gi_validate_test would send: modules inlined, " +
       "{{variables}} resolved from `variables`, the suite and the organization, and " +
-      "all three submit-guard layers applied. Nothing is sent to Ghost Inspector, " +
+      "all three submit-guard layers applied. Nothing is executed, only definitions are read: " +
       "no browser starts, and no organization id is needed. Use it before any " +
       "validation of a test that touches production.\n\n" +
       "`plan` lists the steps in order, numbered as every other report numbers " +
@@ -894,8 +895,9 @@ server.registerTool(
         "`expectedResultId` is required: the result whose screenshot you looked at, " +
         "from gi_screenshot_status. The accept is refused if a newer run has landed " +
         "since, if the latest run is still going, or if its comparison passed or did " +
-        "not run (there is nothing to accept then), so it can never bless an image " +
-        "nobody saw. After the accept the test is re-read and `verification` shows " +
+        "not run (there is nothing to accept then). The check is read-then-accept with " +
+        "no compare-and-swap, so a run landing in the moment between them could still " +
+        "slip through: it catches a stale id, not a genuine race. After the accept the test is re-read and `verification` shows " +
         "`screenshotComparePassing`. Accepting does not move `dateUpdated`, so it does " +
         "not invalidate a token you already hold.",
       inputSchema: {
