@@ -87,6 +87,10 @@ export const ARM_SOURCE = String.raw`function (g) {
       return open.apply(this, arguments);
     };
     XMLHttpRequest.prototype.send = function () {
+      if (this.__giMethod === undefined) {
+        g.log("xhr (opened before the guard armed) " + String(this.responseURL || "unknown URL"));
+        return undefined;
+      }
       if (!g.reads(this.__giMethod)) {
         g.log("xhr " + String(this.__giMethod).toUpperCase() + " " + String(this.__giUrl));
         return undefined;

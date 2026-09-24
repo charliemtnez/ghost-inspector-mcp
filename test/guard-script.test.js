@@ -204,3 +204,13 @@ test("an optional click still stops on a selector the probe cannot read, or on a
   assert.match(page().run(probeScript(["#go"], 2, true)), /submit button/);
   assert.match(page().run(probeScript(["#cookie-banner .close"], 2)), /not resolvable/, "a required click is unchanged");
 });
+
+test("an XHR opened before the tripwire armed is not assumed to be a read", () => {
+  const p = page();
+  const xhr = new p.env.XMLHttpRequest();
+  xhr.open("POST", "/lead");
+  p.run(stopCondition());
+  xhr.send();
+  assert.deepEqual(p.fetched, [], "its method is unknown, so it is blocked");
+  assert.equal(JSON.parse(p.run(logScript())).blocked.length, 1);
+});
