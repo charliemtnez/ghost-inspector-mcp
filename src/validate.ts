@@ -458,10 +458,12 @@ export function settingsFor(
  * @return One entry per setting the result echoes with another value.
  */
 export function settingsCheck(requested: Record<string, unknown>, result: Record<string, unknown>): SettingDrift[] {
-  const normal = (key: string, value: unknown): string => {
-    const text = JSON.stringify(value);
-    return key === "browser" ? String(value).toLowerCase().replace(/-\d+(\.\d+)*$/, "") : text;
-  };
+  const sorted = (value: unknown): unknown =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+      : value;
+  const normal = (key: string, value: unknown): string =>
+    key === "browser" ? String(value).toLowerCase().replace(/-\d+(\.\d+)*$/, "") : JSON.stringify(sorted(value));
   return Object.entries(requested)
     .filter(([key]) => result[key] !== undefined && result[key] !== null)
     .filter(([key, value]) => normal(key, value) !== normal(key, result[key]))

@@ -293,6 +293,11 @@ test("a setting the run did not honour is reported", () => {
   assert.deepEqual(drift.map((d) => d.setting), ["userAgent"], "chrome-114 is chrome");
 });
 
+test("a setting echoed with its keys in another order is not drift", () => {
+  const drift = settingsCheck({ viewportSize: { width: 1280, height: 800 } }, { viewportSize: { height: 800, width: 1280 } });
+  assert.deepEqual(drift, []);
+});
+
 test("an open step shows where it goes and a long script is cut, with its length", async () => {
   const script = `return ${"1 + ".repeat(100)}1;`;
   const { steps } = await expandSteps(
