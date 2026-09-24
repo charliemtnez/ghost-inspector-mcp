@@ -18,6 +18,7 @@ import {
   type BrokenReference,
   type Steps,
 } from "./graph.js";
+import { scopeFor, scopeNote, type ScopeFilter } from "./scope.js";
 
 /** Importer names listed per module before switching to a count. */
 const NAME_CAP = 25;
@@ -78,6 +79,18 @@ export interface UsageReport {
    */
   vacuousTests: string[];
   brokenReferences: BrokenReference[];
+}
+
+/**
+ * A usage report cut down to the modules in a scope, each keeping its account-wide blast radius.
+ *
+ * @param report The report over the whole account.
+ * @param ids The tests in scope.
+ * @return Only the modules that are in the scope or reached from a test in it.
+ */
+export function scopeUsage(report: UsageReport, ids: ReadonlySet<string>): UsageReport {
+  const modules = report.modules.filter((m) => ids.has(m.id) || m.importers.some((importer) => ids.has(importer.id)));
+  return { ...report, modules };
 }
 
 /**
@@ -215,7 +228,7 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
   };
 }
 
-export interface UsageOptions {
+export interface UsageOptions extends ScopeFilter {
   /** Case-insensitive substring of a module name. Lifts the importer-name cap. */
   module?: string | undefined;
 }
@@ -231,7 +244,16 @@ export interface UsageOptions {
 export async function getModuleUsage(options: UsageOptions = {}): Promise<UsageReport> {
   const tests = await request<TestRecord[]>("GET", "tests", { timeoutMs: 120_000 });
   const { steps } = await fetchDefinitions(tests);
-  const report = buildUsage(tests, steps);
+  const scope = await scopeFor(options, tests);
+  const report = scope ? scopeUsage(buildUsage(tests, steps), scope.ids) : buildUsage(tests, steps);
+  if (scope) {
+    report.notes.unshift(
+      scopeNote(
+        scope,
+        "Only modules those tests import are listed, but the whole account was scanned: every importer count and name is account-wide, since a module shared outside the scope is not safe to edit just because the scope looks small.",
+      ),
+    );
+  }
 
   if (options.module) {
     const needle = options.module.toLowerCase();

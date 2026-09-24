@@ -239,6 +239,8 @@ server.registerTool(
       "A definition that cannot be read is counted in `scanned.unreadable`, never " +
       "skipped silently, because a missing definition understates a blast radius.",
     inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Lists only the modules its tests import; counts stay account-wide."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Lists only the modules its tests import; with folder, both apply."),
       module: z
         .string()
         .optional()
@@ -248,7 +250,7 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ module }) => safeText(() => getModuleUsage({ module })),
+  async ({ module, folder, suite }) => safeText(() => getModuleUsage({ module, folder, suite })),
 );
 
 server.registerTool(
@@ -275,6 +277,8 @@ server.registerTool(
       "rather than evaluated, since they have no results to compare against.\n\n" +
       "Costs one request per test, a few seconds for a few hundred tests.",
     inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Narrows the report to that folder's tests."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Narrows the report to that suite's tests; with folder, both apply."),
       includePasses: z
         .boolean()
         .optional()
@@ -284,7 +288,7 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ includePasses }) => safeText(() => getStaleTests({ includePasses })),
+  async ({ includePasses, folder, suite }) => safeText(() => getStaleTests({ includePasses, folder, suite })),
 );
 
 const STEP_SCHEMA = z.object({
@@ -418,11 +422,14 @@ server.registerTool(
       "passes; if it does, the test proves nothing.\n\n" +
       "Modules are excluded before counting: import-only deletes results, so " +
       "including them would condemn the shared layer every live test depends on. " +
-      "Costs one request per test.",
-    inputSchema: {},
+      "Costs one request per test; with folder or suite, one per test in scope plus the modules they import.",
+    inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Narrows the report to that folder's tests."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Narrows the report to that suite's tests; with folder, both apply."),
+    },
     annotations: READ_ONLY,
   },
-  async () => safeText(() => getVacuousTests()),
+  async ({ folder, suite }) => safeText(() => getVacuousTests({ folder, suite })),
 );
 
 server.registerTool(
