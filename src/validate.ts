@@ -47,8 +47,15 @@ import {
  */
 const SUBMIT_TARGET = /type\s*=\s*["']?submit|\bsubmit\b|\bsend\b/i;
 
-/** Script bodies that can activate a control without a click step. */
-const SUBMIT_SCRIPT = /\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(/i;
+/** Script bodies that can activate a control or send data without a click step. */
+const SUBMIT_SCRIPT =
+  /\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(|dispatchEvent\s*\(|\bfetch\s*\(|XMLHttpRequest|sendBeacon\s*\(|\$\.ajax\b|\$\.post\b|\baxios\b/i;
+
+/** Commands whose `value` is a script the page runs. */
+const SCRIPT_COMMANDS = new Set(["eval", "assertEval", "extractEval"]);
+
+/** In run mode, a click target that names a control: after a field is filled, it may send the form. */
+const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button/i;
 
 /** Key values that submit a focused form. */
 const SUBMIT_KEY = /^(enter|return|\\n|\\r|13)$/i;
@@ -231,35 +238,60 @@ export interface Guard {
  * Finds the first step that could submit a form.
  *
  * @param steps Fully expanded steps.
+ * @param mode `run` adds one rule for stored runs, which have no in-browser probe: a control clicked after an assign.
  * @returns Index and reason, or `null` when nothing looks like a submission.
  */
-export function findSubmit(steps: ExpandedStep[]): { index: number; reason: string } | null {
+export function findSubmit(
+  steps: ExpandedStep[],
+  mode: "validate" | "run" = "validate",
+): { index: number; reason: string } | null {
+  let filled = false;
   for (const [index, step] of steps.entries()) {
+    if (step.condition && SUBMIT_SCRIPT.test(step.condition)) {
+      return { index, reason: `a condition whose script can activate a control or send data, on ${step.command}` };
+    }
     if (step.command === "click" && SUBMIT_TARGET.test(step.target)) {
       return { index, reason: `click on a submit-shaped target: ${step.target}` };
     }
     if (step.command === "keypress" && SUBMIT_KEY.test(step.value.trim())) {
       return { index, reason: `keypress of ${step.value.trim()}, which submits a focused form` };
     }
-    if (
-      (step.command === "eval" || step.command === "assertEval") &&
-      SUBMIT_SCRIPT.test(step.value)
-    ) {
-      return { index, reason: `${step.command} whose script can activate a control` };
+    if (SCRIPT_COMMANDS.has(step.command) && SUBMIT_SCRIPT.test(step.value)) {
+      return { index, reason: `${step.command} whose script can activate a control or send data` };
     }
+    if (mode === "run" && filled && step.command === "click" && CONTROL_TARGET.test(step.target)) {
+      return { index, reason: `click on a control after a field was filled: ${step.target}` };
+    }
+    if (step.command === "assign") filled = true;
   }
   return null;
 }
 
 /**
- * Truncates at the first submitting step and asserts that step's target instead.
+ * Truncates at the first submitting step, or earlier at `stopBefore`, and asserts that step's target instead.
  *
  * @param steps Fully expanded steps.
- * @returns The steps that will run, and what was held back.
+ * @param options `stopBefore`: a plan index to stop at. It can only move the cut earlier.
+ * @returns The steps that will run, what was held back, and a note when stopBefore was ignored.
  */
-export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guard: Guard | null } {
-  const hit = findSubmit(steps);
-  if (!hit) return { steps, guard: null };
+export function applyGuard(
+  steps: ExpandedStep[],
+  options: { stopBefore?: number | undefined } = {},
+): { steps: ExpandedStep[]; guard: Guard | null; notes: string[] } {
+  const found = findSubmit(steps);
+  const notes: string[] = [];
+  const requested = options.stopBefore;
+  let hit = found;
+  if (requested !== undefined && requested >= 0 && requested < steps.length) {
+    if (!found || requested < found.index) {
+      hit = { index: requested, reason: `stopBefore ${requested}, requested by the caller` };
+    } else if (requested > found.index) {
+      notes.push(
+        `stopBefore ${requested} was ignored: the guard already stops at step ${found.index}, and stopBefore can only stop earlier.`,
+      );
+    }
+  }
+  if (!hit) return { steps, guard: null, notes };
 
   const kept = steps.slice(0, hit.index);
   const submitting = steps[hit.index];
@@ -286,6 +318,7 @@ export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guar
       droppedSteps: steps.length - hit.index,
       assertedTarget: target || null,
     },
+    notes,
   };
 }
 
@@ -382,6 +415,8 @@ export interface ValidateOptions {
   viewport?: string | undefined;
   /** Override, e.g. "chrome". Defaults to the test's, then the suite's. */
   browser?: string | undefined;
+  /** Stop before this plan step. Only ever earlier than the guard's own cut. */
+  stopBefore?: number | undefined;
   /**
    * Report what would run and stop. Nothing is sent to Ghost Inspector, so no
    * browser starts and no page is loaded — the only way to inspect the guard's
@@ -480,6 +515,7 @@ export interface RunInputs {
   viewport?: string | undefined;
   browser?: string | undefined;
   variables?: Record<string, string> | undefined;
+  stopBefore?: number | undefined;
 }
 
 export interface PreparedRun {
@@ -509,10 +545,10 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
     caller: inputs.variables,
   });
   const resolution = resolveDefinition(inputs.startUrl, inputs.expansion.steps, vars);
-  const { steps: toRun, guard } = applyGuard(resolution.steps);
+  const { steps: toRun, guard, notes: guardNotes } = applyGuard(resolution.steps, { stopBefore: inputs.stopBefore });
   const settings = settingsFor(inputs.test, inputs.suite, { viewport: inputs.viewport, browser: inputs.browser });
 
-  const notes: string[] = [];
+  const notes: string[] = [...guardNotes];
   const auth = str(inputs.test?.["httpAuthUsername"]) || str(inputs.suite?.["httpAuthUsername"]);
   if (auth) {
     notes.push(
@@ -738,6 +774,7 @@ async function runValidation(
     viewport: options.viewport,
     browser: options.browser,
     variables: options.variables,
+    stopBefore: options.stopBefore,
   });
   const { toRun, guard, settings, resolution } = prepared;
 

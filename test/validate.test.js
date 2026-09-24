@@ -59,6 +59,47 @@ test("a script that can activate a control is caught", () => {
   }
 });
 
+test("an extractEval that posts data is a submit", () => {
+  for (const body of [
+    "return fetch('/api/lead', { method: 'POST', body: '{}' }).then(() => 'ok');",
+    "var x = new XMLHttpRequest(); x.open('POST', '/lead'); x.send(); return 'sent';",
+    "navigator.sendBeacon('/lead', 'x'); return 1;",
+    "return $.ajax({ url: '/lead', type: 'POST' });",
+    "$.post('/lead', {}); return 1;",
+    "return axios.post('/lead', {});",
+    "document.querySelector('#f').dispatchEvent(new Event('submit')); return 1;",
+  ]) {
+    assert.ok(findSubmit([S("extractEval", "", body)]), `should catch: ${body}`);
+  }
+});
+
+test("a condition can submit too", () => {
+  // A condition is a script the page evaluates before the step: it can do
+  // anything an eval can, and it rides on steps that look harmless.
+  const step = { ...S("click", "#next"), condition: "document.forms[0].requestSubmit(); return true;" };
+  const hit = findSubmit([S("assign", "#n", "Jane"), step]);
+  assert.equal(hit.index, 1);
+  assert.match(hit.reason, /condition/);
+});
+
+test("stopBefore can only stop earlier", () => {
+  const steps = [S("assign", "#a", "x"), S("assign", "#b", "y"), S("click", SUBMIT), S("assertTextPresent", "body", "Thanks")];
+  const earlier = applyGuard(steps, { stopBefore: 1 });
+  assert.equal(earlier.guard.stoppedAt, 1);
+  assert.equal(earlier.steps.filter((s) => s.command === "assign").length, 1);
+  const later = applyGuard(steps, { stopBefore: 3 });
+  assert.equal(later.guard.stoppedAt, 2, "the static cut still wins");
+  assert.ok(later.notes.some((note) => /stopBefore 3 was ignored/.test(note)));
+  assert.equal(applyGuard(steps, { stopBefore: 99 }).guard.stoppedAt, 2);
+});
+
+test("a Continue button typed submit stops the run — accepted false positive", () => {
+  // Pinned on purpose: a multi-step form's "Continue" is often type=submit, and
+  // stopping there costs a shorter validation, while guessing wrong posts a lead.
+  const hit = findSubmit([S("assign", "#zip", "10001"), S("click", 'form#step-1 button[type="submit"].continue')]);
+  assert.equal(hit.index, 1);
+});
+
 test("an ordinary click is not treated as a submit", () => {
   assert.equal(findSubmit([S("click", "#open-modal"), S("assign", "#n", "x")]), null);
 });
