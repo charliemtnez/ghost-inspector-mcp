@@ -226,3 +226,22 @@ test("an old run is judged stale against its own date, not the latest run's", ()
   assert.equal(verdict.verdict, "stale", "against the run being diagnosed, the edit came after");
   assert.equal(verdict.currentlyFailing, true, "and that run is the red one");
 });
+
+test("a module re-saved after the run is not mapped through the zeroed sequences the run recorded", async () => {
+  // Re-saving a zeroed module gives it clean sequences, but the result was
+  // recorded before, with every step at 0, and the chain is now stale.
+  const { owners, expanded, result } = await auditRun(12);
+  const mod = owners.get("mod");
+  owners.set("mod", { ...mod, steps: mod.steps.map((step, i) => ({ ...step, sequence: i })) });
+  const step = locateFailingStep(result, expanded, owners, { stale: true, truncated: false }, "root");
+  assert.equal(step.mapping, "unmapped");
+  assert.deepEqual(step.authoredTargets, [], "never the module's step 0");
+});
+
+test("a result whose own sequences are distinct can still be mapped through them", async () => {
+  const { owners, expanded, result } = await auditRun(12);
+  const recorded = result.map((r, i) => ({ ...r, extra: { rootSequence: expanded[i].rootIndex, source: { test: expanded[i].ownerId, sequence: expanded[i].indexInOwner } } }));
+  const step = locateFailingStep(recorded, expanded, owners, { stale: true, truncated: false }, "root");
+  assert.equal(step.mapping, "stored sequence");
+  assert.deepEqual(step.authoredTargets, [SUBMIT]);
+});

@@ -446,7 +446,8 @@ server.registerTool(
       "`failingStep.mapping` says how that position was found. `position`: the " +
       "current definition was expanded locally and lines up with the result step " +
       "for step. `stored sequence`: it did not, and the result's own stored " +
-      "position was used because the owner's sequences are exactly 0..n-1. " +
+      "position was used because the run recorded a distinct one for every step " +
+      "of that owner. " +
       "`unmapped`: neither held, so sequenceInOwner and authoredTargets are " +
       "unknown — never guessed. A result's own `extra.source.sequence` is copied " +
       "from the stored `sequence` field, which a client that omits it leaves at 0 " +

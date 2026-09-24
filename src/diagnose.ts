@@ -249,6 +249,19 @@ export function sequencesUsable(steps: Steps): boolean {
 }
 
 /**
+ * Whether the sequences a result recorded for one owner's steps can locate them: all present, none repeated.
+ *
+ * @param resultSteps Steps of the result.
+ * @param ownerId The test whose steps are checked.
+ * @return False when any recorded sequence is missing or repeats, as it does for a list saved without them.
+ */
+function recordedSequencesDistinct(resultSteps: Array<Record<string, unknown>>, ownerId: string): boolean {
+  const recorded = resultSteps.map(storedLocation).filter((location) => location.ownerId === ownerId);
+  const sequences = recorded.map((location) => location.sequenceInOwner);
+  return sequences.length > 0 && sequences.every((n) => n !== null) && new Set(sequences).size === sequences.length;
+}
+
+/**
  * Finds the failing step of a result and maps it to the definition step that produced it.
  *
  * @param resultSteps Steps of the result.
@@ -282,9 +295,8 @@ export function locateFailingStep(
 
   const stored = storedLocation(step);
   const owner = owners.get(stored.ownerId);
-  const root = owners.get(rootId);
-  if (owner && stored.sequenceInOwner !== null && sequencesUsable(owner.steps)) {
-    const rootSequence = root && sequencesUsable(root.steps) ? stored.rootSequence : null;
+  if (owner && stored.sequenceInOwner !== null && recordedSequencesDistinct(resultSteps, stored.ownerId)) {
+    const rootSequence = recordedSequencesDistinct(resultSteps, rootId) ? stored.rootSequence : null;
     return describeFailingStep(step, owner.steps, owner.name, owner.isModule, { ...stored, rootSequence });
   }
   return describeFailingStep(step, null, owner?.name ?? "", owner?.isModule ?? false, {
@@ -310,7 +322,7 @@ export function targetNotes(step: FailingStep): string[] {
   }
   if (step.mapping === "unmapped") {
     notes.push(
-      "⚠️ This step could not be located in its test's definition, so authoredTargets and sequenceInOwner are unknown. Usually the owner's steps carry duplicate `sequence` values (saved by a client that omitted it); re-saving them with gi_update_test repairs the mapping. Otherwise the result no longer lines up with the current definition — re-run the test and ask again.",
+      "⚠️ This step could not be located in its test's definition, so authoredTargets and sequenceInOwner are unknown. Usually the run recorded duplicate `sequence` values for the owner's steps (saved by a client that omitted them); re-saving the owner with gi_update_test repairs the mapping for every run after the save. Otherwise the result no longer lines up with the current definition — re-run the test and ask again.",
     );
   }
   if (step.ownedBy?.isModule) {
