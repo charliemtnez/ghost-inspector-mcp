@@ -14,6 +14,8 @@ import {
   applyGuard,
   expandSteps,
   findSubmit,
+  outcomesOf,
+  planOf,
   prepareRun,
   settingsCheck,
   settingsFor,
@@ -289,4 +291,23 @@ test("a setting the run did not honour is reported", () => {
     { userAgent: "Mozilla/5.0 Ghost Inspector", browser: "chrome-114", viewportSize: { width: 1280, height: 800 } },
   );
   assert.deepEqual(drift.map((d) => d.setting), ["userAgent"], "chrome-114 is chrome");
+});
+
+test("an open step shows where it goes and a long script is cut, with its length", async () => {
+  const script = `return ${"1 + ".repeat(100)}1;`;
+  const { steps } = await expandSteps(
+    [{ command: "open", value: "https://example.com/next" }, { command: "extractEval", value: script, variableName: "sum" }],
+    async () => ({ name: "", steps: [] }),
+  );
+  const plan = planOf(steps);
+  assert.equal(plan[0].value, "https://example.com/next");
+  assert.equal(plan[0].valueLength, undefined, "a short value is shown whole");
+  assert.equal(plan[1].value.length, 200);
+  assert.equal(plan[1].valueLength, script.length);
+  const [, extracted] = outcomesOf(
+    [{ command: "open", passing: true, value: "https://example.com/next" }, { command: "extractEval", passing: true, value: script, extracted: "101" }],
+    steps,
+  );
+  assert.equal(extracted.extracted, "101");
+  assert.equal(extracted.valueLength, script.length);
 });

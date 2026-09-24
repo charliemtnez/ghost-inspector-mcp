@@ -294,6 +294,11 @@ export interface StepOutcome {
   command: string;
   target: string;
   status: "passed" | "failed" | "not reached";
+  /** Cut to 200 characters; `valueLength` is set when it was. */
+  value?: string;
+  valueLength?: number;
+  /** What an extract or extractEval step captured. */
+  extracted?: unknown;
   error?: string;
   fromModule?: string;
 }
@@ -302,6 +307,9 @@ export interface PlannedStep {
   sequence: number;
   command: string;
   target: string;
+  /** Cut to 200 characters; `valueLength` is set when it was. */
+  value?: string;
+  valueLength?: number;
   fromModule?: string;
   /** Present when the step runs conditionally, inherited conditions included. */
   condition?: string;
@@ -563,7 +571,42 @@ function names(record: Record<string, unknown> | null): string {
   return list.length > 0 ? list.join(", ") : "nothing";
 }
 
-function outcomes(resultSteps: Array<Record<string, unknown>>, sent: ExpandedStep[]): StepOutcome[] {
+const VALUE_CAP = 200;
+
+/**
+ * A step value cut for display, with its full length when it was cut.
+ *
+ * @param value The step's value.
+ * @return Nothing for an empty value; otherwise the value, and valueLength when cut.
+ */
+function clipped(value: string): { value?: string; valueLength?: number } {
+  if (!value) return {};
+  return value.length > VALUE_CAP ? { value: value.slice(0, VALUE_CAP), valueLength: value.length } : { value };
+}
+
+/**
+ * What will run, step by step, readable without executing anything.
+ *
+ * @param steps The steps to be sent, guard applied.
+ * @return One entry per step.
+ */
+export function planOf(steps: ExpandedStep[]): PlannedStep[] {
+  return steps.map((step, sequence) => {
+    const entry: PlannedStep = { sequence, command: step.command, target: step.target, ...clipped(step.value) };
+    if (step.fromModule) entry.fromModule = step.fromModule;
+    if (step.condition) entry.condition = step.condition;
+    return entry;
+  });
+}
+
+/**
+ * Each result step's outcome, paired by position with the step that was sent.
+ *
+ * @param resultSteps Steps of the finished result.
+ * @param sent The steps that were sent.
+ * @return One outcome per result step.
+ */
+export function outcomesOf(resultSteps: Array<Record<string, unknown>>, sent: ExpandedStep[]): StepOutcome[] {
   return resultSteps.map((step, index) => {
     const passing = step["passing"];
     const error = str(step["error"]);
@@ -573,7 +616,9 @@ function outcomes(resultSteps: Array<Record<string, unknown>>, sent: ExpandedSte
       command: str(step["command"]),
       target: str(step["target"]),
       status: passing === true ? "passed" : passing === false ? "failed" : "not reached",
+      ...clipped(sent[index]?.value ?? str(step["value"])),
     };
+    if (step["extracted"] !== undefined) outcome.extracted = step["extracted"];
     if (error) outcome.error = error;
     if (from) outcome.fromModule = from;
     return outcome;
@@ -655,12 +700,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   });
   const { toRun, guard, settings, resolution } = prepared;
 
-  const plan: PlannedStep[] = toRun.map((s, sequence) => {
-    const entry: PlannedStep = { sequence, command: s.command, target: s.target };
-    if (s.fromModule) entry.fromModule = s.fromModule;
-    if (s.condition) entry.condition = s.condition;
-    return entry;
-  });
+  const plan = planOf(toRun);
 
   const size = settings.values["viewportSize"] as { width?: number; height?: number } | undefined;
   const viewport = size?.width && size.height ? `${size.width}x${size.height}` : null;
@@ -786,7 +826,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   // would invent one; a browser run has been observed taking 99s.
   const result = await pollResult(pending._id, { timeoutMs: 300_000, intervalMs: 5_000 });
 
-  const stepOutcomes = outcomes(result.steps ?? [], toRun);
+  const stepOutcomes = outcomesOf(result.steps ?? [], toRun);
   const drift = settingsCheck(settings.values, result);
   const notes: string[] = [
     "Nothing was saved: on-demand execution runs a definition and discards it. The test in the account is untouched.",
