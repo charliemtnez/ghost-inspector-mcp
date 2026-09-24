@@ -55,8 +55,9 @@ test("neverExecuted excludes tests that report a pass or a fail", () => {
   assert.equal(report.totals.neverExecuted, 1, "only the abandoned one");
 });
 
-test("failing test names are listed and sorted", () => {
-  assert.deepEqual(suite("Beta", "Forms").failingTests, ["red A", "red B"]);
+test("failing tests come back with their ids, sorted by name", () => {
+  assert.deepEqual(suite("Beta", "Forms").failingTests.map((t) => t.name), ["red A", "red B"]);
+  assert.ok(suite("Beta", "Forms").failingTests.every((t) => typeof t.id === "string" && t.id));
 });
 
 test("failingTests is omitted when a suite is green", () => {

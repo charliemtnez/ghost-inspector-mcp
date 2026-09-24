@@ -73,7 +73,7 @@ test("a cycle is flagged as a defect and excluded from its own count", () => {
   assert.equal(mod("cycle Y").inCycle, true);
   assert.equal(report.totals.cycles, 2);
   // Self-reach would inflate the blast radius by one and read as a dependency.
-  assert.deepEqual(mod("cycle X").importerNames, ["cycle Y"]);
+  assert.deepEqual(mod("cycle X").importers.map((i) => i.name), ["cycle Y"]);
   assert.equal(mod("cycle X").allImporters, 1);
 });
 
@@ -96,7 +96,7 @@ test("the pure function does not trim its own lists", () => {
     new Map([["M", [step()]], ...many.map((m) => [m._id, ex("M")])]),
   );
   const target = wide.modules.find((m) => m.name === "M");
-  assert.equal(target.importerNames.length, 40);
+  assert.equal(target.importers.length, 40);
   assert.equal(target.omittedImporters, 0);
 });
 
@@ -155,4 +155,8 @@ test("a no-op module is measured through its chain, not by literal emptiness", (
 test("the vacuous finding is spelled out in the notes", () => {
   assert.ok(vacuous.notes.some((n) => n.includes("execute NO steps at all")));
   assert.ok(vacuous.notes.some((n) => n.includes("contribute no real step")));
+});
+
+test("importers come back with their ids", () => {
+  assert.ok(mod("mod A").importers.every((i) => typeof i.id === "string" && typeof i.name === "string"));
 });

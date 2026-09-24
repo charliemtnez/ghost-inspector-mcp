@@ -23,6 +23,7 @@ import {
 const NAME_CAP = 25;
 
 export interface ModuleUsage {
+  id: string;
   name: string;
   /** Whether it is flagged import-only. A false value here is a finding. */
   importOnly: boolean;
@@ -30,8 +31,8 @@ export interface ModuleUsage {
   directImporters: number;
   /** Every test that reaches it through any chain of executes. */
   allImporters: number;
-  /** Names of the transitive importers, capped. */
-  importerNames: string[];
+  /** The transitive importers, capped, sorted by name. */
+  importers: Array<{ id: string; name: string }>;
   omittedImporters: number;
   /** Deepest chain by which it is reached. 1 means only direct. */
   maxDepth: number;
@@ -99,15 +100,18 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
       // Reaching itself means the chain loops. Keep that as a flag and drop it
       // from the importer set, so a cycle cannot quietly inflate a count.
       const inCycle = ids.delete(id);
-      const names = [...ids].map((i) => name.get(i) ?? i).sort();
+      const importers = [...ids]
+        .map((i) => ({ id: i, name: name.get(i) ?? i }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       return {
+        id,
         name: name.get(id) ?? id,
         importOnly: byId.get(id)?.importOnly === true,
         directImporters: reverse.get(id)?.size ?? 0,
         allImporters: ids.size,
         // Uncapped here. Trimming is presentation, applied at the boundary so
         // this function never reports an omission count it did not cause.
-        importerNames: names,
+        importers,
         omittedImporters: 0,
         maxDepth: depth,
         depthTruncated: truncated,
@@ -242,12 +246,12 @@ export async function getModuleUsage(options: UsageOptions = {}): Promise<UsageR
   // Unfiltered, cap the name lists so a widely-shared module cannot dominate
   // the response — and say how many were dropped, never trimming in silence.
   report.modules = report.modules.map((m) =>
-    m.importerNames.length <= NAME_CAP
+    m.importers.length <= NAME_CAP
       ? m
       : {
           ...m,
-          importerNames: m.importerNames.slice(0, NAME_CAP),
-          omittedImporters: m.importerNames.length - NAME_CAP,
+          importers: m.importers.slice(0, NAME_CAP),
+          omittedImporters: m.importers.length - NAME_CAP,
         },
   );
   const trimmed = report.modules.filter((m) => m.omittedImporters > 0).length;
