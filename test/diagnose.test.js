@@ -8,8 +8,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { assessStaleness } from "../dist/writes.js";
 import {
   alignByPosition,
+  asOfRun,
   authoredSelectors,
   describeFailingStep,
   horizonVerdict,
@@ -210,4 +212,17 @@ test("a result whose commands differ from the definition is not aligned", async 
   const { expanded, result } = await auditRun(12);
   const edited = result.map((step, i) => (i === 3 ? { ...step, command: "click" } : step));
   assert.equal(alignByPosition(edited, expanded, { stale: false, truncated: false }), null);
+});
+
+test("an old run is judged stale against its own date, not the latest run's", () => {
+  // Run -3 failed; the step was edited after it; run 0 passed after the edit.
+  const test = {
+    _id: "t", name: "t", passing: true,
+    dateUpdated: "2026-09-10T00:00:00Z", dateExecutionFinished: "2026-09-20T00:00:00Z",
+  };
+  const oldRun = { _id: "r3", passing: false, dateExecutionFinished: "2026-09-01T00:00:00Z" };
+  assert.equal(assessStaleness(test, [], false).verdict, "current", "against the latest run nothing changed");
+  const verdict = assessStaleness(asOfRun(test, oldRun), [], false);
+  assert.equal(verdict.verdict, "stale", "against the run being diagnosed, the edit came after");
+  assert.equal(verdict.currentlyFailing, true, "and that run is the red one");
 });

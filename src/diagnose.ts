@@ -207,6 +207,20 @@ function storedLocation(step: Record<string, unknown>): StepLocation {
 }
 
 /**
+ * The test record with the dates and verdict of the given run.
+ *
+ * @param test The test record.
+ * @param result The run being diagnosed.
+ * @return A copy to compare the chain against.
+ */
+export function asOfRun(test: TestRecord, result: RunResult): TestRecord {
+  const copy: TestRecord = { ...test, passing: result.passing ?? null };
+  if (result["dateExecutionFinished"] !== undefined) copy.dateExecutionFinished = String(result["dateExecutionFinished"]);
+  if (result["dateExecutionTriggered"] !== undefined) copy.dateExecutionTriggered = String(result["dateExecutionTriggered"]);
+  return copy;
+}
+
+/**
  * Pairs each result step with the expanded definition step at the same position.
  *
  * @param resultSteps Steps of a result, in run order.
@@ -411,7 +425,7 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
   const stepsOf = (record: TestRecord): Steps => (Array.isArray(record.steps) ? record.steps : []);
   const { ids, truncated } = await collectChainIds(identity.id, async (id) => stepsOf(await loadRecord(id)));
   const chain = await pool(ids, REQUEST_CONCURRENCY, loadRecord);
-  const staleness = assessStaleness(test, chain, truncated);
+  const staleness = assessStaleness(asOfRun(test, result), chain, truncated);
 
   if (run.passing === null) {
     return {
