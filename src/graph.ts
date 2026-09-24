@@ -280,17 +280,19 @@ export async function fetchDefinitions(tests: TestRecord[]): Promise<Definitions
  *
  * @param ids The tests in scope.
  * @param load Reads one test's steps, or null when it cannot be read.
+ * @param maxDepth How many levels of imports to follow; 0 reads only the tests themselves.
  * @return Steps by test id, plus how many could not be read.
  */
 export async function fetchDefinitionsClosure(
   ids: string[],
   load: (id: string) => Promise<Steps | null> = loadSteps,
+  maxDepth = DOCUMENTED_MAX_DEPTH,
 ): Promise<Definitions> {
   const steps = new Map<string, Steps>();
   const seen = new Set<string>();
   let unreadable = 0;
   let frontier = [...new Set(ids)];
-  for (let depth = 0; depth <= DOCUMENTED_MAX_DEPTH && frontier.length > 0; depth += 1) {
+  for (let depth = 0; depth <= maxDepth && frontier.length > 0; depth += 1) {
     for (const id of frontier) seen.add(id);
     const loaded = await pool(frontier, REQUEST_CONCURRENCY, async (id) => ({ id, steps: await load(id) }));
     const next = new Set<string>();
