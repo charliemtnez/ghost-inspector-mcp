@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stopCondition } from "../dist/guard-script.js";
+import { collectVariables } from "../dist/variables.js";
 
 import {
   andConditions,
@@ -528,4 +529,18 @@ test("the guard's own extractions never come back as evidence", () => {
     extractions: { giGuardLog: '{"blocked":["fetch POST https://example.com/c?sid=secret"]}', giGuardProbe3: "clear", formSelector: "#lead" },
   }, false);
   assert.deepEqual(evidence.extractions, { formSelector: "#lead" });
+});
+
+test("a private value is masked in its URL-encoded and JSON-escaped forms too", () => {
+  const hidden = 'ab/c+d== "q"';
+  const vars = collectVariables({ suite: [{ name: "pin", value: hidden, private: true }] });
+  const report = maskPrivate({
+    urls: [`https://example.com/?pin=${encodeURIComponent(hidden)}`, `https://example.com/?pin=${encodeURIComponent(hidden).replace(/%20/g, "+")}`],
+    endUrl: `https://example.com/${encodeURI(hidden)}`,
+    log: JSON.stringify({ value: hidden }),
+  }, vars);
+  const text = JSON.stringify(report);
+  for (const form of [hidden, encodeURIComponent(hidden), encodeURI(hidden), JSON.stringify(hidden).slice(1, -1)]) {
+    assert.ok(!text.includes(form), `leaked as ${form}`);
+  }
 });

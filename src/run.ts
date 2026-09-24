@@ -25,7 +25,7 @@
 import { pollResult, request, type RunResult, type TestRecord } from "./client.js";
 import { type Steps } from "./graph.js";
 import { evidenceOf, executionTimeMs, type Evidence } from "./results.js";
-import { expandSteps, findSubmit, type ExpandedStep, type Loaded } from "./validate.js";
+import { expandSteps, findSubmit, maskPrivate, type ExpandedStep, type Loaded } from "./validate.js";
 import { resolveDefinition, variablesFor, type VariableValue } from "./variables.js";
 
 /**
@@ -181,6 +181,19 @@ export function assessRun(
  * @throws {ConfigError} when the API key is not configured.
  */
 export async function runTest(options: RunOptions): Promise<RunReport> {
+  const seen: { vars?: ReadonlyMap<string, VariableValue> } = {};
+  const report = await runStored(options, seen);
+  return seen.vars ? maskPrivate(report, seen.vars) : report;
+}
+
+/**
+ * runTest's body; records the variables it resolved so the report can be masked on every path.
+ *
+ * @param options The test, and confirmation if it submits.
+ * @param seen Receives the variables once they are loaded.
+ * @return The unmasked report.
+ */
+async function runStored(options: RunOptions, seen: { vars?: ReadonlyMap<string, VariableValue> }): Promise<RunReport> {
   const test = await request<TestRecord>("GET", `tests/${options.testId}`);
 
   // A module cannot be executed at all: import-only blocks a direct run and a
@@ -205,6 +218,7 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
   };
   const expansion = await expandSteps((Array.isArray(test.steps) ? test.steps : []) as Steps, load);
   const vars = await variablesFor(test);
+  seen.vars = vars;
   const assessment = assessRun(expansion.steps, expansion.modules.length, expansion.truncated, vars);
 
   if (assessment.submits && options.confirmSubmit !== true) {

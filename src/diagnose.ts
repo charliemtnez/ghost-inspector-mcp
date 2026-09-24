@@ -29,7 +29,8 @@ import {
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
 import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
-import { expandSteps, type ExpandedStep } from "./validate.js";
+import { expandSteps, maskPrivate, type ExpandedStep } from "./validate.js";
+import { variablesFor, type VariableValue } from "./variables.js";
 import { assessStaleness, type StalenessVerdict } from "./writes.js";
 
 /** What the run's own record says, independent of any step. */
@@ -349,8 +350,25 @@ export interface DiagnoseOptions {
  * @throws {ConfigError} when the API key is not configured.
  */
 export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis> {
+  const seen: { vars?: ReadonlyMap<string, VariableValue> } = {};
+  const diagnosis = await diagnoseStored(options, seen);
+  return seen.vars ? maskPrivate(diagnosis, seen.vars) : diagnosis;
+}
+
+/**
+ * diagnoseTest's body; records the suite's variables so every path can be masked.
+ *
+ * @param options The test, and how far back to look.
+ * @param seen Receives the variables once they are loaded.
+ * @return The unmasked diagnosis.
+ */
+async function diagnoseStored(
+  options: DiagnoseOptions,
+  seen: { vars?: ReadonlyMap<string, VariableValue> },
+): Promise<Diagnosis> {
   const runsBack = Math.max(0, options.runsBack ?? 0);
   const test = await request<TestRecord>("GET", `tests/${options.testId}`);
+  seen.vars = await variablesFor(test);
   const suiteRecord = test["suite"];
   const identity = {
     id: String(test._id ?? options.testId),

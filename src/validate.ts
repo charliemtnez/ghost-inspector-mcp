@@ -800,10 +800,13 @@ export function validationEvidence(result: Record<string, unknown>, verbose: boo
  * @return The same shape, private values masked.
  */
 export function maskPrivate<T>(value: T, vars: ReadonlyMap<string, VariableValue>): T {
-  const hidden = [...vars.values()]
-    .filter((entry) => entry.private && entry.value !== "")
-    .map((entry) => entry.value)
-    .sort((a, b) => b.length - a.length);
+  const hidden = [
+    ...new Set(
+      [...vars.values()]
+        .filter((entry) => entry.private && entry.value !== "")
+        .flatMap((entry) => encodedForms(entry.value)),
+    ),
+  ].sort((a, b) => b.length - a.length);
   if (hidden.length === 0) return value;
   const mask = (item: unknown): unknown => {
     if (typeof item === "string") return hidden.reduce((text, secret) => text.split(secret).join("(private)"), item);
@@ -814,6 +817,17 @@ export function maskPrivate<T>(value: T, vars: ReadonlyMap<string, VariableValue
     return item;
   };
   return mask(value) as T;
+}
+
+/**
+ * The ways a value can appear once it has passed through a URL or a JSON document.
+ *
+ * @param value A secret.
+ * @return The raw value, its URL-encoded forms and its JSON-escaped form.
+ */
+function encodedForms(value: string): string[] {
+  const component = encodeURIComponent(value);
+  return [value, component, component.replace(/%20/g, "+"), encodeURI(value), JSON.stringify(value).slice(1, -1)];
 }
 
 /**
