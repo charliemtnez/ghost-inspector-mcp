@@ -24,6 +24,7 @@
 
 import { pollResult, request, type RunResult, type TestRecord } from "./client.js";
 import { type Steps } from "./graph.js";
+import { executionTimeMs } from "./results.js";
 import { expandSteps, findSubmit, type Loaded } from "./validate.js";
 
 /**
@@ -203,7 +204,7 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
       resultId: resultId || null,
       outcome: {
         passing: pending.passing,
-        executionTimeMs: typeof pending.executionTime === "number" ? pending.executionTime : null,
+        executionTimeMs: executionTimeMs(pending),
         endUrl: pending.endUrl === undefined || pending.endUrl === null ? null : String(pending.endUrl),
       },
       notes: [
@@ -239,7 +240,7 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
       resultId,
       outcome: {
         passing: finished.passing ?? null,
-        executionTimeMs: typeof finished.executionTime === "number" ? finished.executionTime : null,
+        executionTimeMs: executionTimeMs(finished),
         endUrl: finished.endUrl === undefined || finished.endUrl === null ? null : String(finished.endUrl),
       },
       notes: [

@@ -28,6 +28,7 @@ import {
   type TestRecord,
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
 import { expandSteps, type ExpandedStep } from "./validate.js";
 import { assessStaleness, type StalenessVerdict } from "./writes.js";
 
@@ -38,7 +39,10 @@ export interface RunSummary {
   finishedAt: string | null;
   executionTimeMs: number | null;
   endUrl: string | null;
+  /** Steps that ran; a skipped condition or a step never reached does not count. */
   stepsExecuted: number;
+  stepsInResult: number;
+  evidence: Evidence;
 }
 
 export interface FailingStep {
@@ -380,9 +384,11 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
     id: String(result._id ?? ""),
     passing: result.passing ?? null,
     finishedAt: result["dateExecutionFinished"] === undefined ? null : String(result["dateExecutionFinished"]),
-    executionTimeMs: typeof result.executionTime === "number" ? result.executionTime : null,
+    executionTimeMs: executionTimeMs(result),
     endUrl: result.endUrl === undefined || result.endUrl === null ? null : String(result.endUrl),
-    stepsExecuted: steps.length,
+    stepsExecuted: stepsExecuted(steps),
+    stepsInResult: steps.length,
+    evidence: evidenceOf(result, false),
   };
   const oldest = results[results.length - 1] as RunResult | undefined;
   const horizon = {
@@ -421,7 +427,7 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
     };
   }
 
-  const notes: string[] = [];
+  const notes: string[] = steps.some((step) => step["command"] === "eval") ? [EVAL_VALUE_NOTE] : [];
   let verdict: Diagnosis["verdict"] = run.passing ? "not failing" : "diagnosable";
   if (staleness.verdict === "stale") {
     verdict = "stale";
