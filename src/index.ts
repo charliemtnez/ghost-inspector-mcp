@@ -25,8 +25,10 @@ import { getTest, readBatch } from "./detail.js";
 import { findTests } from "./find.js";
 import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
+import { failureGroups, testHistory } from "./history.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
+import { acceptScreenshot, screenshotStatus } from "./screenshots.js";
 import { getStaleTests } from "./stale.js";
 import { planTest, validateTest, type ValidateOptions } from "./validate.js";
 import { getVacuousTests } from "./vacuous.js";
@@ -55,7 +57,7 @@ const server = new McpServer(
       "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
       "EVERY tool is listed, including the gated ones, so you never have to infer a " +
       "capability from an absence. Reading needs nothing. Mutating (gi_update_test, " +
-      "gi_move_suite, gi_create_suite, gi_duplicate_test) needs " +
+      "gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot) needs " +
       "GHOST_INSPECTOR_ALLOW_WRITES=true. Executing a stored test (gi_run_test) needs " +
       "GHOST_INSPECTOR_ALLOW_RUNS=true, which the write variable does NOT imply. Call a " +
       "gated tool without its variable and it refuses, changes nothing, and tells the user " +
@@ -193,7 +195,8 @@ server.registerTool(
         writesEnabled: writesAllowed(),
         runsEnabled: runsAllowed(),
         gates: {
-          writes: "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test",
+          writes:
+            "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot",
           runs: "GHOST_INSPECTOR_ALLOW_RUNS — gi_run_test. Not implied by the write gate.",
         },
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
@@ -472,6 +475,76 @@ server.registerTool(
   },
   async ({ testId, testIds, runsBack }) =>
     safeText(() => oneOrMany(testId, testIds, (id) => diagnoseTest({ testId: id, runsBack }))),
+);
+
+server.registerTool(
+  "gi_test_history",
+  {
+    title: "Ghost Inspector: a test's run history, and when its red began",
+    description:
+      "Read-only. Walks a test's results newest first, 50 per page, and returns " +
+      "each run's verdict and failing step (command, error, the selector that " +
+      "resolved), plus `lastPass` and `firstFail`, the oldest failure of the current " +
+      "red streak, which dates a regression.\n\n" +
+      "🔴 Read `horizon` before concluding anything. Ghost Inspector purges old " +
+      "results. `exhausted: true` means retention ended there and nothing older " +
+      "exists. `exhausted: false` means more history exists than was asked for, and " +
+      "`streakMayContinue` says the red streak may have begun earlier: raise `runs`. " +
+      "A run with `passing: null` is in flight, never a failure. Modules are refused: " +
+      "import-only deletes their results. For why the latest run failed, " +
+      "gi_test_result maps the failing step back to its definition.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+      runs: z.number().int().min(1).max(500).optional().describe("How many runs to walk back. Default 50, at most 500; one request per 50."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, runs }) => safeText(() => testHistory({ testId, runs })),
+);
+
+server.registerTool(
+  "gi_failure_groups",
+  {
+    title: "Ghost Inspector: red tests grouped by when they started failing",
+    description:
+      "Read-only. For every red test (modules excluded), finds its onset, the first " +
+      "failure after its last green run, and groups onsets that follow each other " +
+      "within `windowHours`, across suites and folders. Many tests going red within " +
+      "hours usually share one cause: a deploy, a shared module, a page change. Each " +
+      "group lists its tests with ids and the most common errors and targets, with " +
+      "numbers and quoted text normalised.\n\n" +
+      "A red test with no green run within `maxRunsPerTest` goes to `onsetUnknown` " +
+      "rather than being guessed. Costs one request per 50 runs per red test; narrow " +
+      "with folder or suite on a large account. Staleness is not considered: use " +
+      "gi_stale_tests for that.",
+    inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name."),
+      suite: z.string().optional().describe("Suite id, or part of its name."),
+      windowHours: z.number().positive().max(720).optional().describe("Largest gap between consecutive onsets in one group. Default 12."),
+      maxRunsPerTest: z.number().int().min(1).max(500).optional().describe("How far back to look for a green run per test. Default 200."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ folder, suite, windowHours, maxRunsPerTest }) =>
+    safeText(() => failureGroups({ folder, suite, windowHours, maxRunsPerTest })),
+);
+
+server.registerTool(
+  "gi_screenshot_status",
+  {
+    title: "Ghost Inspector: screenshot comparison state of a test",
+    description:
+      "Read-only. The test's screenshot-comparison settings and its latest result's " +
+      "comparison: enabled, passing, the measured difference against the threshold, " +
+      "and three image URLs to look at: the current screenshot (`screenshotUrl`), " +
+      "the difference image (`diffUrl`) and the baseline it was compared with. " +
+      "`latestResult.id` is what gi_accept_screenshot takes as `expectedResultId`.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId }) => safeText(() => screenshotStatus(testId)),
 );
 
 server.registerTool(
@@ -803,6 +876,34 @@ server.registerTool(
           verbose,
         }),
       ),
+  );
+
+// Accepting replaces the baseline every later run is compared against, and the
+// API has no route back, so it sits behind the write gate and a token.
+server.registerTool(
+    "gi_accept_screenshot",
+    {
+      title: "Ghost Inspector: accept the latest screenshot as the new baseline",
+      description:
+        "Makes the latest result's screenshot the baseline that every later run of " +
+        "this test is compared against. 🔴 The API offers no way to restore an " +
+        "earlier baseline; the response returns `previousBaselineResult` so it can at " +
+        "least be found again.\n\n" +
+        "`expectedResultId` is required: the result whose screenshot you looked at, " +
+        "from gi_screenshot_status. The accept is refused if a newer run has landed " +
+        "since, if the latest run is still going, or if its comparison passed or did " +
+        "not run (there is nothing to accept then), so it can never bless an image " +
+        "nobody saw. After the accept the test is re-read and `verification` shows " +
+        "`screenshotComparePassing`. Accepting does not move `dateUpdated`, so it does " +
+        "not invalidate a token you already hold.",
+      inputSchema: {
+        testId: z.string().describe("The 24-character test id."),
+        expectedResultId: z.string().describe("latestResult.id from gi_screenshot_status: the result whose screenshot you reviewed."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ testId, expectedResultId }) =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () => acceptScreenshot({ testId, expectedResultId })),
   );
 
   server.registerTool(

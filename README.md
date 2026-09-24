@@ -47,7 +47,7 @@ The four write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `tr
 
 **Creating a test from nothing is not possible.** Ghost Inspector exposes no create endpoint — `POST /tests/` returns the test listing, the organization- and folder-scoped variants return 404, and the vendor documents update, duplicate and delete with no create. `gi_duplicate_test` is the supported route: copy an existing test, place it, rename it. It is named for what it does, because calling it "create" would set the wrong expectation about needing a source.
 
-**Not built.** Dating a regression back to its last green run. Old results are purged, so there is a horizon past which the API cannot answer it, and a tool that silently stops working at an unknown depth is worse than no tool.
+**Dating a regression** back to its last green run is `gi_test_history`. Old results are purged, so every answer carries its horizon: how far back it walked, and whether that was the end of what Ghost Inspector retains or only the end of what was asked for.
 
 ## What you can ask for
 
