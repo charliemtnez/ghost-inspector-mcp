@@ -323,10 +323,10 @@ const STEP_SCHEMA = z.object({
       "One of: assertElementNotPresent, assertElementNotVisible, assertElementPresent, assertElementVisible, assertEval, assertNotText, assertText, assertTextNotPresent, assertTextPresent, assign, click, dragAndDrop, eval, execute, exit, extract, extractEval, keypress, mouseOver, open, pause, refresh, screenshot, store.",
     ),
   target: z
-    .string()
+    .union([z.string(), z.array(z.object({ selector: z.string() }).passthrough())])
     .optional()
     .describe(
-      "CSS selector. 🔴 REQUIRED by the text assertions: assertTextPresent with no target fails with \"Text not contained\" even when the text is plainly on the page, which reads as a product bug rather than a malformed step — scope it to body at minimum. Anchor to stable semantic attributes (data-*, name, id) and scope to a container id. Never :nth-of-type, never XPath matching visible copy, never long chains of presentational classes. A selector matching more than one element is a latent failure. Attribute selectors need brackets: [data-x=\"y\"], not data-x=\"y\", which is not valid CSS and never matched anything.",
+      "CSS selector, or an array of fallback selectors ({selector}) tried in order, as gi_get_test returns them. 🔴 REQUIRED by the text assertions: assertTextPresent with no target fails with \"Text not contained\" even when the text is plainly on the page, which reads as a product bug rather than a malformed step — scope it to body at minimum. Anchor to stable semantic attributes (data-*, name, id) and scope to a container id. Never :nth-of-type, never XPath matching visible copy, never long chains of presentational classes. A selector matching more than one element is a latent failure. Attribute selectors need brackets: [data-x=\"y\"], not data-x=\"y\", which is not valid CSS and never matched anything.",
     ),
   value: z
     .string()
@@ -343,6 +343,7 @@ const STEP_SCHEMA = z.object({
       "JavaScript deciding whether the step runs, with an explicit return. Stored as {statement}, which gi_get_test returns; a bare string is written in that shape. AND-ed with conditions inherited from enclosing imports.",
     ),
   optional: z.boolean().optional().describe("Continue when this step fails."),
+  private: z.boolean().optional().describe("Hide the step's value in results, for secrets. Kept on every write; omitting it clears it."),
 });
 
 server.registerTool(

@@ -52,7 +52,7 @@ import { backupDir } from "./config.js";
 import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
 /** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
-const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "sequence"] as const;
+const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "private", "sequence"] as const;
 
 /**
  * Ghost Inspector normalises steps on write: it fills `condition: null`,
@@ -72,6 +72,7 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
     variableName: text(step["variableName"]),
     condition: conditionStatement(step["condition"]),
     optional: step["optional"] === true,
+    private: step["private"] === true,
     sequence: typeof step["sequence"] === "number" ? step["sequence"] : null,
   };
 }

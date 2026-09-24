@@ -71,6 +71,8 @@ export interface ExpandedStep {
   variableName: string;
   condition: string | null;
   optional: boolean;
+  /** Ghost Inspector hides a private step's value in results. */
+  private: boolean;
   /** Name of the module this step was inlined from, when it was. */
   fromModule: string | null;
   /** The test whose own step list holds this step: the root, or a module. */
@@ -180,6 +182,7 @@ async function expand(
         variableName: str(step["variableName"]),
         condition: andConditions(inherited, own),
         optional: step["optional"] === true,
+        private: step["private"] === true,
         fromModule: depth > 0 ? owner.name : null,
         ownerId: owner.id,
         ownerName: owner.name,
@@ -357,6 +360,7 @@ export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map:
           variableName: `giGuardProbe${planIndex}`,
           condition,
           optional: false,
+          private: false,
         },
         planIndex,
         "probe",
@@ -374,6 +378,7 @@ export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map:
       variableName: "giGuardLog",
       condition: null,
       optional: true,
+      private: false,
       fromModule: null,
       ownerId: last?.ownerId ?? "",
       ownerName: last?.ownerName ?? "",
@@ -772,6 +777,7 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
             ...(step.variableName ? { variableName: step.variableName } : {}),
             ...(step.condition ? { condition: { statement: step.condition } } : {}),
             ...(step.optional ? { optional: true } : {}),
+            ...(step.private ? { private: true } : {}),
           })),
           ...settings.values,
         };

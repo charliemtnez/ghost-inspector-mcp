@@ -544,3 +544,8 @@ test("a private value is masked in its URL-encoded and JSON-escaped forms too", 
     assert.ok(!text.includes(form), `leaked as ${form}`);
   }
 });
+
+test("a private step stays private in the validation body", async () => {
+  const run = await prepared({ steps: [{ command: "assign", target: "#pin", value: "1234", private: true }] });
+  assert.equal(run.body.steps[0].private, true);
+});
