@@ -115,6 +115,7 @@ export function buildStaleReport(
   steps: Map<string, Steps>,
   now: number,
   only?: ReadonlySet<string>,
+  unreadableCount?: number,
 ): StaleReport {
   const { forward, name } = buildEdges(tests, steps);
   const byId = new Map(tests.map((t) => [t._id, t]));
@@ -235,12 +236,18 @@ export function buildStaleReport(
       "At least one chain reached the documented 10-level nesting limit, so its change set is a floor rather than a total.",
     );
   }
+  const unreadable = unreadableCount ?? inScope.filter((test) => !steps.has(test._id)).length;
+  if (unreadable > 0) {
+    notes.push(
+      `⚠️ ${unreadable} definition(s) could not be read. An edit inside one is invisible here, so a failure listed as genuine may be stale. Ask again in a moment: the API rate-limits bursts.`,
+    );
+  }
 
   return {
     scanned: {
       tests: inScope.length,
       stepRequests: steps.size,
-      unreadable: inScope.filter((test) => !steps.has(test._id)).length,
+      unreadable,
     },
     totals: {
       evaluated,
@@ -282,8 +289,8 @@ export interface StaleOptions extends ScopeFilter {
 export async function getStaleTests(options: StaleOptions = {}): Promise<StaleReport> {
   const tests = await request<TestRecord[]>("GET", "tests", { timeoutMs: 120_000 });
   const scope = await scopeFor(options, tests);
-  const { steps } = scope ? await fetchDefinitionsClosure([...scope.ids]) : await fetchDefinitions(tests);
-  const report = buildStaleReport(tests, steps, Date.now(), scope?.ids);
+  const { steps, unreadable } = scope ? await fetchDefinitionsClosure([...scope.ids]) : await fetchDefinitions(tests);
+  const report = buildStaleReport(tests, steps, Date.now(), scope?.ids, scope ? unreadable : undefined);
   if (scope) {
     report.notes.unshift(scopeNote(scope));
   }
