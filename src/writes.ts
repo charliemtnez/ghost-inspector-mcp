@@ -37,6 +37,9 @@
  * agent. It stays a deliberate `curl` by someone who knows what they are doing.
  */
 
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
   hasNeverExecuted,
   isModule,
@@ -45,9 +48,11 @@ import {
   type TestRecord,
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { backupDir } from "./config.js";
+import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
-/** Step fields that define behaviour. Anything else is presentation. */
-const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional"] as const;
+/** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
+const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "sequence"] as const;
 
 /**
  * Ghost Inspector normalises steps on write: it fills `condition: null`,
@@ -67,7 +72,28 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
     variableName: text(step["variableName"]),
     condition: text(step["condition"]) === "" ? null : text(step["condition"]),
     optional: step["optional"] === true,
+    sequence: typeof step["sequence"] === "number" ? step["sequence"] : null,
   };
+}
+
+/**
+ * The body of a test update, every step's `sequence` overwritten with its index.
+ *
+ * @param options The fields being changed.
+ * @returns The JSON body for `POST /tests/{id}/`.
+ */
+export function buildUpdateBody(options: Pick<UpdateOptions, "steps" | "name" | "startUrl">): UpdateBody {
+  const body: UpdateBody = {};
+  if (options.steps !== undefined) body.steps = options.steps.map((step, i) => ({ ...step, sequence: i }));
+  if (options.name !== undefined) body.name = options.name;
+  if (options.startUrl !== undefined) body.startUrl = options.startUrl;
+  return body;
+}
+
+export interface UpdateBody {
+  steps?: Steps;
+  name?: string;
+  startUrl?: string;
 }
 
 export interface ChainChange {
@@ -189,7 +215,8 @@ export function diffUntouched(
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (ignore.has(key)) continue;
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
-      out.push({ field: key, sent: "(not sent)", stored: after[key] });
+      const stored = isCredentialKey(key) ? "(redacted)" : stripCredentials(after[key]);
+      out.push({ field: key, sent: "(not sent)", stored });
     }
   }
   return out;
@@ -198,13 +225,20 @@ export function diffUntouched(
 export interface UpdateResult {
   applied: boolean;
   refusedBecause?: string;
+  /** The record's current `dateUpdated`: the `expectedDateUpdated` of the next edit. */
+  dateUpdated: string;
   staleness: StalenessVerdict;
-  /** 🔴 The complete prior definition. There is no version history — this is the rollback. */
-  backup: TestRecord;
+  /** 🔴 The complete prior definition, credentials removed. Inline only with `verbose` or when the file failed. */
+  backup?: TestRecord;
+  /** 🔴 Where the prior definition was saved. There is no version history — this file is the rollback. */
+  backupFile?: string;
+  backupSummary?: BackupSummary;
   sentFields: string[];
   verification: {
     stepsMatch: boolean;
     stepDiffs: FieldDiff[];
+    /** `name` and `startUrl`, when sent, as read back. */
+    fieldDiffs: FieldDiff[];
     untouchedFieldsIntact: boolean;
     unexpectedChanges: FieldDiff[];
   } | null;
@@ -215,14 +249,181 @@ export interface UpdateOptions {
   testId: string;
   steps?: Steps | undefined;
   name?: string | undefined;
+  /** Accepted by `POST /tests/{id}/` — not verified live; guard 4 checks every write of it. */
+  startUrl?: string | undefined;
   /** The `dateUpdated` the caller believes is current. Proof it read the record. */
   expectedDateUpdated: string;
   /** Required to proceed when guard 1 reports the test as stale. */
   confirmStaleDiagnosis?: boolean | undefined;
+  /** Also return the backup inline, for clients that cannot read the file. */
+  verbose?: boolean | undefined;
+}
+
+export interface BackupSummary {
+  name: string;
+  startUrl: string;
+  stepCount: number;
+  dateUpdated: string;
+}
+
+export interface BackupOutcome {
+  file: string | null;
+  error: string | null;
 }
 
 /**
- * Updates a test's steps or name, behind the four guards.
+ * Guard 2 on disk: saves the prior definition, credentials removed, readable only by its owner.
+ *
+ * @param record The test as read before the write.
+ * @return The file written, or why it could not be.
+ */
+export function saveBackup(record: TestRecord): BackupOutcome {
+  const dir = backupDir();
+  const stamp = String(record.dateUpdated ?? "undated").replace(/[:.]/g, "-");
+  const file = join(dir, `${String(record._id ?? "unknown")}-${stamp}.json`);
+  try {
+    const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (created !== undefined) chmodSync(dir, 0o700);
+    writeFileSync(file, JSON.stringify(stripCredentials(record), null, 2), { mode: 0o600 });
+    chmodSync(file, 0o600);
+    return { file, error: null };
+  } catch (error) {
+    return { file: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Points a result at its backup file, keeping the backup inline when asked or when the file failed.
+ *
+ * @param result A result carrying the backup inline.
+ * @param saved What saveBackup reported.
+ * @param verbose Keep the inline backup even though the file exists.
+ * @return The result the caller receives.
+ */
+export function withBackup(result: UpdateResult, saved: BackupOutcome, verbose: boolean): UpdateResult {
+  const record: Partial<TestRecord> = result.backup ?? {};
+  const summary: BackupSummary = {
+    name: String(record.name ?? ""),
+    startUrl: String(record.startUrl ?? ""),
+    stepCount: Array.isArray(record.steps) ? record.steps.length : 0,
+    dateUpdated: String(record.dateUpdated ?? ""),
+  };
+  if (saved.file === null) {
+    return {
+      ...result,
+      backupSummary: summary,
+      notes: [
+        ...result.notes,
+        `⚠️ The backup file could not be written (${saved.error}), so the prior definition is inline as \`backup\`. Keep it: it is the only rollback.`,
+      ],
+    };
+  }
+  const { backup, ...rest } = result;
+  return { ...rest, ...(verbose ? { backup } : {}), backupFile: saved.file, backupSummary: summary };
+}
+
+/** What updateTest knows before it writes, shared by every response it builds. */
+export interface WriteContext {
+  before: TestRecord;
+  staleness: StalenessVerdict;
+  sentFields: string[];
+  chainLength: number;
+}
+
+/**
+ * The response to a write that was refused. Guard 2: the backup still comes back.
+ *
+ * @param context The record as read, and the staleness verdict.
+ * @param why The refusal reason.
+ * @param notes What to do next.
+ * @returns A result with nothing applied.
+ */
+export function refusedResult(context: WriteContext, why: string, notes: string[]): UpdateResult {
+  return {
+    applied: false,
+    refusedBecause: why,
+    dateUpdated: String(context.before.dateUpdated ?? ""),
+    staleness: context.staleness,
+    backup: stripCredentials(context.before),
+    sentFields: context.sentFields,
+    verification: null,
+    notes,
+  };
+}
+
+/**
+ * The response to an applied write: guard 4's diff of the re-read against what was sent.
+ *
+ * @param context The record as read before the write, and the staleness verdict.
+ * @param body What was sent.
+ * @param after The record as re-read after the write.
+ * @returns The verification, the backup and the token for the next edit.
+ */
+export function appliedResult(
+  context: WriteContext,
+  body: UpdateBody,
+  after: TestRecord,
+): UpdateResult {
+  const { before, staleness, sentFields } = context;
+  const stepDiffs = body.steps !== undefined ? diffSteps(body.steps, (after.steps ?? []) as Steps) : [];
+  const fieldDiffs = (["name", "startUrl"] as const)
+    .filter((field) => body[field] !== undefined && after[field] !== body[field])
+    .map((field) => ({ field, sent: body[field], stored: after[field] }));
+  const unexpected = diffUntouched(before, after, sentFields);
+  const dateUpdated = String(after.dateUpdated ?? "");
+
+  const notes: string[] = [
+    "🔴 The backup is the complete prior definition and the only rollback that exists. Keep it until you are sure of this change.",
+    `dateUpdated is now "${dateUpdated}": pass this as expectedDateUpdated for the next edit.`,
+  ];
+  if (stepDiffs.length > 0) {
+    notes.push(
+      `🔴 THE WRITE DID NOT LAND AS SENT: ${stepDiffs.length} step difference(s) after re-reading. Compare and consider restoring from backup.`,
+    );
+  }
+  if (fieldDiffs.length > 0) {
+    notes.push(
+      `🔴 THE WRITE DID NOT LAND AS SENT: ${fieldDiffs.map((d) => d.field).join(", ")} reads back different from what was sent.`,
+    );
+  }
+  if (unexpected.length > 0) {
+    notes.push(
+      `🔴 ${unexpected.length} field(s) changed that were never sent: ${unexpected.map((d) => d.field).join(", ")}. A partial update is documented to preserve everything else, so this contradicts the contract — verify before trusting it.`,
+    );
+  }
+  if (stepDiffs.length === 0 && fieldDiffs.length === 0 && unexpected.length === 0) {
+    notes.push("Verified: what was sent landed exactly, and nothing else moved.");
+  }
+  if (staleness.verdict === "stale") {
+    notes.push(
+      "Applied over a stale diagnosis because confirmStaleDiagnosis was passed. If that was wrong, restore from backup now.",
+    );
+  }
+  if (body.name !== undefined) {
+    notes.push(
+      `Renaming does not move the test between suites or folders, and importers reference it by id, so its ${context.chainLength ? "chain and " : ""}importers are unaffected.`,
+    );
+  }
+
+  return {
+    applied: true,
+    dateUpdated,
+    staleness,
+    backup: stripCredentials(before),
+    sentFields,
+    verification: {
+      stepsMatch: stepDiffs.length === 0,
+      stepDiffs,
+      fieldDiffs,
+      untouchedFieldsIntact: unexpected.length === 0,
+      unexpectedChanges: unexpected,
+    },
+    notes,
+  };
+}
+
+/**
+ * Updates a test's steps, name or start URL, behind the four guards.
  *
  * @param options The change, plus the concurrency token.
  * @returns What was refused or applied, the prior definition, and the diff.
@@ -230,8 +431,8 @@ export interface UpdateOptions {
  * @throws {ConfigError} when the API key is not configured.
  */
 export async function updateTest(options: UpdateOptions): Promise<UpdateResult> {
-  if (options.steps === undefined && options.name === undefined) {
-    throw new Error("Nothing to change: pass steps, name, or both.");
+  if (options.steps === undefined && options.name === undefined && options.startUrl === undefined) {
+    throw new Error("Nothing to change: pass steps, name or startUrl.");
   }
 
   const before = await request<TestRecord>("GET", `tests/${options.testId}`);
@@ -256,24 +457,20 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   const sentFields = [
     ...(options.steps !== undefined ? ["steps"] : []),
     ...(options.name !== undefined ? ["name"] : []),
+    ...(options.startUrl !== undefined ? ["startUrl"] : []),
   ];
 
-  // Guard 2 is satisfied by returning `before` on every path, refusals included.
-  const refuse = (why: string, notes: string[]): UpdateResult => ({
-    applied: false,
-    refusedBecause: why,
-    staleness,
-    backup: before,
-    sentFields,
-    verification: null,
-    notes,
-  });
+  const context: WriteContext = { before, staleness, sentFields, chainLength: chain.length };
+  const saved = saveBackup(before);
+  const verbose = options.verbose === true;
+  const refuse = (why: string, notes: string[]): UpdateResult =>
+    withBackup(refusedResult(context, why, notes), saved, verbose);
 
   if (String(before.dateUpdated ?? "") !== options.expectedDateUpdated) {
     return refuse("concurrency token mismatch", [
       `expectedDateUpdated was "${options.expectedDateUpdated}" but the record now reads "${String(before.dateUpdated ?? "")}".`,
       "Someone changed this test since you read it, or you never read it. Nothing was written.",
-      "🔴 Do not simply resend with the value above. Your change was composed against a definition that is no longer stored, so replaying it would overwrite whatever that other edit did — and there is no version history to recover it from. Call gi_get_test, read what is there now, redo the change against it, and pass the dateUpdated it returns. The current definition is in `backup` below if you want to diff first.",
+      "🔴 Do not simply resend with the value above. Your change was composed against a definition that is no longer stored, so replaying it would overwrite whatever that other edit did — and there is no version history to recover it from. Call gi_get_test, read what is there now, redo the change against it, and pass the dateUpdated it returns. The current definition is in the backup (`backupFile`, or `backup` with verbose) if you want to diff first.",
     ]);
   }
 
@@ -294,57 +491,12 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   }
 
   // Guard 3.
-  const body: Record<string, unknown> = {};
-  if (options.steps !== undefined) body["steps"] = options.steps;
-  if (options.name !== undefined) body["name"] = options.name;
+  const body = buildUpdateBody(options);
   await request<TestRecord>("POST", `tests/${options.testId}`, { body });
 
   // Guard 4. HTTP 200 does not prove the write landed as intended.
   const after = await request<TestRecord>("GET", `tests/${options.testId}`);
-  const stepDiffs =
-    options.steps !== undefined ? diffSteps(options.steps, (after.steps ?? []) as Steps) : [];
-  const unexpected = diffUntouched(before, after, sentFields);
-
-  const notes: string[] = [
-    "🔴 `backup` is the complete prior definition and the only rollback that exists. Keep it until you are sure of this change.",
-  ];
-  if (stepDiffs.length > 0) {
-    notes.push(
-      `🔴 THE WRITE DID NOT LAND AS SENT: ${stepDiffs.length} step difference(s) after re-reading. Compare and consider restoring from backup.`,
-    );
-  }
-  if (unexpected.length > 0) {
-    notes.push(
-      `🔴 ${unexpected.length} field(s) changed that were never sent: ${unexpected.map((d) => d.field).join(", ")}. A partial update is documented to preserve everything else, so this contradicts the contract — verify before trusting it.`,
-    );
-  }
-  if (stepDiffs.length === 0 && unexpected.length === 0) {
-    notes.push("Verified: what was sent landed exactly, and nothing else moved.");
-  }
-  if (staleness.verdict === "stale") {
-    notes.push(
-      "Applied over a stale diagnosis because confirmStaleDiagnosis was passed. If that was wrong, restore from backup now.",
-    );
-  }
-  if (options.name !== undefined) {
-    notes.push(
-      `Renaming does not move the test between suites or folders, and importers reference it by id, so its ${chain.length ? "chain and " : ""}importers are unaffected.`,
-    );
-  }
-
-  return {
-    applied: true,
-    staleness,
-    backup: before,
-    sentFields,
-    verification: {
-      stepsMatch: stepDiffs.length === 0,
-      stepDiffs,
-      untouchedFieldsIntact: unexpected.length === 0,
-      unexpectedChanges: unexpected,
-    },
-    notes,
-  };
+  return withBackup(appliedResult(context, body, after), saved, verbose);
 }
 
 export interface MoveResult {

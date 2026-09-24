@@ -11,14 +11,28 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { assessStaleness, diffSteps, diffUntouched } from "../dist/writes.js";
+import {
+  appliedResult,
+  assessStaleness,
+  buildUpdateBody,
+  diffSteps,
+  diffUntouched,
+  refusedResult,
+  saveBackup,
+  withBackup,
+} from "../dist/writes.js";
+import { stripCredentials } from "../dist/redact-record.js";
 
 const iso = (s) => new Date(Date.parse(s)).toISOString();
 const RUN = iso("2026-08-01T12:00:00Z");
 const BEFORE = iso("2026-07-01T00:00:00Z");
 const AFTER = iso("2026-08-03T00:00:00Z");
 const EPOCH = iso("1970-01-01T00:00:00Z");
+const PLANTED = "fixture-basic-auth-value";
 
 const subject = (over = {}) => ({
   _id: "t", name: "the test", passing: false,
@@ -84,29 +98,44 @@ const stored = (command, target = "", value = "", over = {}) => ({
   command, target, value, variableName: "", condition: null,
   optional: false, private: false, sequence: 0, _id: "x", ...over,
 });
+/** The steps exactly as the write path sends them, positions included. */
+const sentOf = (steps) => buildUpdateBody({ steps }).steps;
+
+test("a saved step list carries its position, or every result maps to step 0", () => {
+  // Omitted, GI stores 0 on every step and each failure then maps to step 0;
+  // the caller's own value is overwritten too.
+  const body = buildUpdateBody({ steps: [{ command: "click", sequence: 7 }, { command: "assign" }, { command: "click" }] });
+  assert.deepEqual(body.steps.map((step) => step.sequence), [0, 1, 2]);
+});
+
+test("a stored sequence that is not the index is reported as a failed write", () => {
+  const sent = sentOf([{ command: "click", target: "#a" }, { command: "click", target: "#b" }]);
+  const d = diffSteps(sent, [stored("click", "#a"), stored("click", "#b")]);
+  assert.deepEqual(d.map((x) => x.field), ["steps[1].sequence"]);
+});
 
 test("identical steps produce no difference", () => {
-  const sent = [{ command: "click", target: "#a" }];
+  const sent = sentOf([{ command: "click", target: "#a" }]);
   assert.equal(diffSteps(sent, [stored("click", "#a")]).length, 0);
 });
 
 test("Ghost Inspector's own defaults are not reported as differences", () => {
-  const sent = [
+  const sent = sentOf([
     { command: "assertElementPresent", target: "body" },
     { command: "assertEval", value: "return true;" },
     { command: "pause", value: "100" },
-  ];
+  ]);
   const back = [
     stored("assertElementPresent", "body"),
-    stored("assertEval", "", "return true;"),
-    stored("pause", "", "100"),
+    stored("assertEval", "", "return true;", { sequence: 1 }),
+    stored("pause", "", "100", { sequence: 2 }),
   ];
   assert.equal(diffSteps(sent, back).length, 0, "these three produced phantom diffs before");
 });
 
 test("presentation fields are ignored", () => {
-  const sent = [{ command: "click", target: "#a", _id: "MINE", sequence: 9 }];
-  assert.equal(diffSteps(sent, [stored("click", "#a", "", { _id: "THEIRS", sequence: 0 })]).length, 0);
+  const sent = sentOf([{ command: "click", target: "#a", _id: "MINE" }]);
+  assert.equal(diffSteps(sent, [stored("click", "#a", "", { _id: "THEIRS" })]).length, 0);
 });
 
 test("a real difference still surfaces", () => {
@@ -129,7 +158,7 @@ test("a length mismatch is reported", () => {
 
 test("an array of fallback selectors compares stably", () => {
   const target = [{ selector: "#a" }, { selector: "#b" }];
-  const sent = [{ command: "click", target }];
+  const sent = sentOf([{ command: "click", target }]);
   const back = [stored("click", "", "", { target: JSON.stringify(target) })];
   assert.equal(diffSteps(sent, back).length, 0);
 });
@@ -180,4 +209,119 @@ test("a field that disappeared during the write is reported", () => {
   const before = { _id: "t", name: "n", suite: "s1" };
   const after = { _id: "t", name: "n" };
   assert.deepEqual(diffUntouched(before, after, ["name"]).map((x) => x.field), ["suite"]);
+});
+
+// --- what a write hands back ------------------------------------------------
+
+/** A write context over a fresh, current test, as updateTest builds it. */
+const context = (before) => ({
+  before, staleness: assessStaleness(before, [], false), sentFields: ["steps"], chainLength: 0,
+});
+
+test("an applied write hands back the token for the next edit", () => {
+  const before = subject({ steps: [] });
+  const body = buildUpdateBody({ steps: [{ command: "click", target: "#a" }] });
+  const after = { ...before, dateUpdated: AFTER, steps: [stored("click", "#a")] };
+  const result = appliedResult(context(before), body, after);
+  assert.equal(result.dateUpdated, AFTER);
+  assert.ok(result.notes.some((note) => note.includes("expectedDateUpdated")));
+});
+
+test("a refused write hands back the token it was refused against", () => {
+  const result = refusedResult(context(subject()), "concurrency token mismatch", []);
+  assert.equal(result.applied, false);
+  assert.equal(result.dateUpdated, BEFORE);
+});
+
+test("a stored basic-auth password never reaches a response", () => {
+  const before = subject({
+    httpAuthUsername: "jane", httpAuthPassword: PLANTED, steps: [],
+    suite: { _id: "s", name: "suite", httpAuthPassword: PLANTED },
+  });
+  const after = { ...before, dateUpdated: AFTER, httpAuthPassword: `${PLANTED}-rotated` };
+  const applied = appliedResult(context(before), buildUpdateBody({ steps: [] }), after);
+  const refused = refusedResult(context(before), "concurrency token mismatch", []);
+  for (const result of [applied, refused]) {
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(PLANTED), "no password, current or rotated, in any response");
+    assert.ok(!text.includes("httpAuthUsername"), "the username goes with it");
+  }
+  const change = applied.verification.unexpectedChanges.find((d) => d.field === "httpAuthPassword");
+  assert.ok(change, "a credential that moved is still reported as moved");
+});
+
+test("credential-shaped keys are stripped at any depth, everything else kept", () => {
+  const clean = stripCredentials({
+    name: "n", apiKey: "k", nested: [{ clientSecret: "s", accessToken: "t", target: "#a" }],
+  });
+  assert.deepEqual(clean, { name: "n", nested: [{ target: "#a" }] });
+});
+
+test("a startUrl that did not land is reported", () => {
+  const before = subject({ startUrl: "https://example.com/old", steps: [] });
+  const body = buildUpdateBody({ startUrl: "https://example.com/new" });
+  assert.equal(body.startUrl, "https://example.com/new");
+  const ignored = appliedResult({ ...context(before), sentFields: ["startUrl"] }, body, { ...before, dateUpdated: AFTER });
+  assert.deepEqual(ignored.verification.fieldDiffs.map((d) => d.field), ["startUrl"]);
+  assert.ok(ignored.notes.some((note) => note.includes("DID NOT LAND")));
+  const landed = appliedResult(
+    { ...context(before), sentFields: ["startUrl"] }, body, { ...before, dateUpdated: AFTER, startUrl: "https://example.com/new" },
+  );
+  assert.equal(landed.verification.fieldDiffs.length, 0);
+});
+
+// --- the backup on disk -----------------------------------------------------
+
+/**
+ * Run a callback with GHOST_INSPECTOR_BACKUP_DIR pointed somewhere else.
+ * @param {string} dir
+ * @param {() => void} run
+ */
+const withBackupDir = (dir, run) => {
+  const previous = process.env.GHOST_INSPECTOR_BACKUP_DIR;
+  process.env.GHOST_INSPECTOR_BACKUP_DIR = dir;
+  try {
+    run();
+  } finally {
+    if (previous === undefined) delete process.env.GHOST_INSPECTOR_BACKUP_DIR;
+    else process.env.GHOST_INSPECTOR_BACKUP_DIR = previous;
+  }
+};
+
+test("the backup file is readable only by its owner", () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "gi-backup-")), "nested", "backups");
+  withBackupDir(dir, () => {
+    const saved = saveBackup(subject({ httpAuthPassword: PLANTED, steps: [{ command: "click" }] }));
+    assert.equal(saved.error, null);
+    assert.equal(statSync(saved.file).mode & 0o777, 0o600);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    const text = readFileSync(saved.file, "utf8");
+    assert.ok(!text.includes(PLANTED), "the file holds no credential");
+    assert.equal(JSON.parse(text).steps.length, 1, "the file holds the steps it exists to restore");
+  });
+});
+
+test("a backup that cannot be written comes back inline, never lost", () => {
+  const blocker = join(mkdtempSync(join(tmpdir(), "gi-backup-")), "a-file");
+  writeFileSync(blocker, "");
+  withBackupDir(join(blocker, "backups"), () => {
+    const saved = saveBackup(subject({ steps: [] }));
+    assert.equal(saved.file, null);
+    assert.ok(saved.error);
+    const result = withBackup(refusedResult(context(subject({ steps: [] })), "x", []), saved, false);
+    assert.ok(result.backup, "the rollback stays in the response when the file failed");
+    assert.ok(result.notes.some((note) => note.includes("could not be written")));
+  });
+});
+
+test("a saved backup is referenced, not inlined, unless verbose", () => {
+  const before = subject({ name: "the test", startUrl: "https://example.com/", steps: [{}, {}] });
+  const saved = { file: "/tmp/backup.json", error: null };
+  const compact = withBackup(refusedResult(context(before), "x", []), saved, false);
+  assert.equal(compact.backup, undefined);
+  assert.equal(compact.backupFile, "/tmp/backup.json");
+  assert.deepEqual(compact.backupSummary, {
+    name: "the test", startUrl: "https://example.com/", stepCount: 2, dateUpdated: BEFORE,
+  });
+  assert.ok(withBackup(refusedResult(context(before), "x", []), saved, true).backup);
 });

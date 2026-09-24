@@ -18,6 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { redact, runsAllowed, writesAllowed } from "./config.js";
+import { stripCredentials } from "./redact-record.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
 import { getTest } from "./detail.js";
@@ -73,10 +74,10 @@ const server = new McpServer(
   },
 );
 
-/** Wraps a handler so failures come back as readable, key-free text. */
+/** Wraps a handler so results come back credential-free and failures as readable, key-free text. */
 async function safeText(run: () => Promise<unknown>) {
   try {
-    const value = await run();
+    const value = stripCredentials(await run());
     return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -529,21 +530,30 @@ server.registerTool(
     {
       title: "Ghost Inspector: update a test, behind four guards",
       description:
-        "Replaces a test's steps and/or renames it. 🔴 Ghost Inspector keeps NO " +
+        "Replaces a test's steps, renames it, or changes its startUrl. 🔴 Ghost Inspector keeps NO " +
         "version history of steps and no recycle bin, so this is permanent.\n\n" +
         "Four guards run on every call and none can be turned off. (1) The whole " +
         "`execute` chain's `dateUpdated` is compared against the test's last run; " +
         "if anything changed after it, the test is stale and the call is refused, " +
         "because a fix diagnosed from a failure that describes a deleted version " +
         "is diagnosed from nothing — and a colleague may already have fixed it. " +
-        "(2) The complete prior definition comes back as `backup`, on refusals " +
-        "too; it is the only rollback that exists, so keep it. (3) The change is " +
+        "(2) The complete prior definition, credentials removed, is saved to " +
+        "`backupFile` (under GHOST_INSPECTOR_BACKUP_DIR, owner-only) on refusals " +
+        "too, with a `backupSummary` beside it. The file is the rollback; clients " +
+        "without filesystem access should pass verbose:true to get it inline as " +
+        "`backup`. If the file cannot be written it comes back inline anyway. (3) The change is " +
         "applied. (4) The record is re-read and diffed, both that what was sent " +
         "landed exactly and that every field you did not send is untouched — " +
         "`HTTP 200` proves neither.\n\n" +
         "`expectedDateUpdated` is required: state the `dateUpdated` you believe is " +
-        "current, and the write is refused if the record has moved since. Read the " +
-        "test first; a refusal tells you the current value so a retry is one step.\n\n" +
+        "current, and the write is refused if the record has moved since. Read it " +
+        "with gi_get_test first. Every response carries the record's current " +
+        "`dateUpdated`; after an applied write that is the token for the next " +
+        "edit, so a series of edits needs no re-read in between. After a refusal, " +
+        "re-read and recompose rather than resending.\n\n" +
+        "Each step's `sequence` is overwritten with its position. Results map a " +
+        "failure back to its step through that field, and a list stored without " +
+        "it maps every failure to step 0.\n\n" +
         "Before overwriting a red test, prefer gi_validate_test, which runs the " +
         "current definition without saving and without submitting a form. If the " +
         "staleness guard trips and you have genuinely verified the current state, " +
@@ -560,24 +570,34 @@ server.registerTool(
           .optional()
           .describe("Replacement step list, in order. Replaces the whole array — send every step you want kept."),
         name: z.string().optional().describe("New name. Renaming does not move the test or break importers, which reference it by id."),
+        startUrl: z
+          .string()
+          .optional()
+          .describe("New start URL. Read back after the write like everything else sent. A module's startUrl is never visited: its importer decides where it starts."),
         confirmStaleDiagnosis: z
           .boolean()
           .optional()
           .describe(
             "Proceed even though the chain changed after the last run. Only after verifying the current definition yourself; otherwise you may be overwriting someone else's fix.",
           ),
+        verbose: z
+          .boolean()
+          .optional()
+          .describe("Also return the prior definition inline as `backup`. For clients that cannot read `backupFile`."),
       },
       // Destructive is the honest word: no version history, no recycle bin.
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
+    async ({ testId, expectedDateUpdated, steps, name, startUrl, confirmStaleDiagnosis, verbose }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         updateTest({
           testId,
           expectedDateUpdated,
           steps: steps as Steps | undefined,
           name,
+          startUrl,
           confirmStaleDiagnosis,
+          verbose,
         }),
       ),
   );
@@ -676,11 +696,14 @@ server.registerTool(
         "it — validate with gi_validate_test before trusting it.\n\n" +
         "If the copy is made but placing or renaming it fails, the response says " +
         "so and returns the id, because the copy is already real and needs " +
-        "cleaning up.",
+        "cleaning up.\n\n" +
+        "A copy keeps the source's `dateCreated` to the millisecond, so " +
+        "`dateCreated` cannot date a copy or tell it apart from its source.",
       inputSchema: {
         sourceTestId: z.string().describe("The test to copy. Required — there is no create."),
         name: z.string().optional().describe('New name. Defaults to "<source> (Copy)".'),
         suiteId: z.string().optional().describe("Suite to place it in. Defaults to the source's suite."),
+        startUrl: z.string().optional().describe("Where the copy starts. Defaults to the source's startUrl."),
         keepSchedule: z
           .boolean()
           .optional()
@@ -689,9 +712,9 @@ server.registerTool(
       // Additive: it creates a new record and overwrites nothing existing.
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ sourceTestId, name, suiteId, keepSchedule }) =>
+    async ({ sourceTestId, name, suiteId, startUrl, keepSchedule }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
-        duplicateTest({ sourceTestId, name, suiteId, keepSchedule }),
+        duplicateTest({ sourceTestId, name, suiteId, startUrl, keepSchedule }),
       ),
   );
 

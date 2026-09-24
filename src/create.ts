@@ -75,6 +75,7 @@ export function plannedChanges(options: DuplicateTestOptions): Record<string, un
   const changes: Record<string, unknown> = {};
   if (options.name !== undefined && options.name.trim()) changes["name"] = options.name.trim();
   if (options.suiteId !== undefined) changes["suite"] = options.suiteId;
+  if (options.startUrl !== undefined && options.startUrl.trim()) changes["startUrl"] = options.startUrl.trim();
   if (options.keepSchedule !== true) {
     changes["testFrequency"] = 0;
     changes["testFrequencyAdvanced"] = [];
@@ -156,6 +157,8 @@ export interface DuplicateTestOptions {
   name?: string | undefined;
   /** Where the copy should land. Defaults to the source's suite. */
   suiteId?: string | undefined;
+  /** Where the copy should start. Defaults to the source's. */
+  startUrl?: string | undefined;
   /**
    * Keep whatever schedule the copy inherited. Off by default, and the default
    * is the safe one — see {@link duplicateTest}.
