@@ -474,16 +474,30 @@ server.registerTool(
       "verified, including that the submit control is reachable, without ever " +
       "activating it. There is no way to make this tool submit; that stays a " +
       "deliberate curl.\n\n" +
-      "For an existing test the suite's viewport and browser are replicated, " +
-      "because tests inherit those and a selector can resolve on desktop and fail " +
-      "on mobile. Read `ranAs.configSource` to see what was actually used.\n\n" +
+      "For an existing test the suite's configuration is replicated in the " +
+      "request body — viewport, browser, user agent, region, language, delays, " +
+      "failOnJavaScriptError, disableVisuals, disallowInsecureCertificates — with " +
+      "a non-null value on the test winning over the suite's, and a caller " +
+      "override winning over both. Tests inherit these, and a selector can resolve " +
+      "on desktop and fail on mobile. `ranAs.settings` shows each value and its " +
+      "source; after the run `settingsCheck` lists any the result reports " +
+      "differently. HTTP basic auth is never sent. An ad-hoc definition gets the " +
+      "same treatment from `suiteId`.\n\n" +
+      "🔴 {{variables}} are substituted here, because on-demand execution ignores " +
+      "custom variables and silently runs an unknown {{name}} as an empty string — " +
+      "a startUrl of https://{{sub}}.example.com/ would run as https://.example.com/ " +
+      "and could still pass. Values come from `variables` (yours), then the suite, " +
+      "then the organization. A name an earlier step sets at run time " +
+      "(variableName), a built-in ({{timestamp}}, {{alphanumeric}}) or a dotted name " +
+      "is left for the browser. Anything else without a value refuses the run " +
+      "before anything is sent, and `variables.unresolved` says where.\n\n" +
       "A browser run takes 20-100 seconds; the tool polls until it finishes. " +
       "`passing: null` in the raw API means not finished, never failed.",
     inputSchema: {
       testId: z
         .string()
         .optional()
-        .describe("Existing test to validate. Its suite's viewport and browser are replicated."),
+        .describe("Existing test to validate. Its suite's configuration and variables are replicated."),
       definition: z
         .object({
           name: z.string().optional(),
@@ -492,10 +506,18 @@ server.registerTool(
         })
         .optional()
         .describe("Ad-hoc definition to validate instead of an existing test."),
+      suiteId: z
+        .string()
+        .optional()
+        .describe("With `definition`: the suite whose configuration and variables it runs with."),
+      variables: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Variable values, e.g. {"subdomain": "www"}. Win over the suite\'s and the organization\'s.'),
       viewport: z
         .string()
         .optional()
-        .describe('Override, e.g. "1280x800". Omit to replicate the suite\'s.'),
+        .describe('Override, e.g. "1280x800". Omit to use the test\'s, then the suite\'s.'),
       browser: z.string().optional().describe('Override, e.g. "chrome". Omit to replicate the suite\'s.'),
       dryRun: z
         .boolean()
@@ -509,11 +531,13 @@ server.registerTool(
     // and the guard keeps it from submitting.
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
-  async ({ testId, definition, viewport, browser, dryRun }) =>
+  async ({ testId, definition, suiteId, variables, viewport, browser, dryRun }) =>
     safeText(() =>
       validateTest({
         testId,
         definition: definition as ValidateOptions["definition"],
+        suiteId,
+        variables,
         viewport,
         browser,
         dryRun,
