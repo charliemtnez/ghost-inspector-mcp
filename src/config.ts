@@ -6,10 +6,14 @@
  * in a log line, an error message or a tool response — not even truncated.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const KEY_VAR = "GHOST_INSPECTOR_API_KEY";
 const ORG_VAR = "GHOST_INSPECTOR_ORG_ID";
 const WRITES_VAR = "GHOST_INSPECTOR_ALLOW_WRITES";
 const RUNS_VAR = "GHOST_INSPECTOR_ALLOW_RUNS";
+const BACKUP_VAR = "GHOST_INSPECTOR_BACKUP_DIR";
 
 /** Thrown when configuration is missing. Its message is safe to surface. */
 export class ConfigError extends Error {
@@ -77,6 +81,15 @@ export function writesAllowed(): boolean {
  */
 export function runsAllowed(): boolean {
   return process.env[RUNS_VAR]?.trim().toLowerCase() === "true";
+}
+
+/**
+ * Where the write path saves the prior definition of every test it touches, read on every call.
+ *
+ * @return GHOST_INSPECTOR_BACKUP_DIR, or ~/.ghost-inspector-mcp/backups.
+ */
+export function backupDir(): string {
+  return process.env[BACKUP_VAR]?.trim() || join(homedir(), ".ghost-inspector-mcp", "backups");
 }
 
 /**

@@ -11,6 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   appliedResult,
@@ -19,6 +22,8 @@ import {
   diffSteps,
   diffUntouched,
   refusedResult,
+  saveBackup,
+  withBackup,
 } from "../dist/writes.js";
 import { stripCredentials } from "../dist/redact-record.js";
 
@@ -27,6 +32,7 @@ const RUN = iso("2026-08-01T12:00:00Z");
 const BEFORE = iso("2026-07-01T00:00:00Z");
 const AFTER = iso("2026-08-03T00:00:00Z");
 const EPOCH = iso("1970-01-01T00:00:00Z");
+const PLANTED = "fixture-basic-auth-value";
 
 const subject = (over = {}) => ({
   _id: "t", name: "the test", passing: false,
@@ -228,17 +234,16 @@ test("a refused write hands back the token it was refused against", () => {
 });
 
 test("a stored basic-auth password never reaches a response", () => {
-  const planted = "fixture-basic-auth-value";
   const before = subject({
-    httpAuthUsername: "jane", httpAuthPassword: planted, steps: [],
-    suite: { _id: "s", name: "suite", httpAuthPassword: planted },
+    httpAuthUsername: "jane", httpAuthPassword: PLANTED, steps: [],
+    suite: { _id: "s", name: "suite", httpAuthPassword: PLANTED },
   });
-  const after = { ...before, dateUpdated: AFTER, httpAuthPassword: `${planted}-rotated` };
+  const after = { ...before, dateUpdated: AFTER, httpAuthPassword: `${PLANTED}-rotated` };
   const applied = appliedResult(context(before), buildUpdateBody({ steps: [] }), after);
   const refused = refusedResult(context(before), "concurrency token mismatch", []);
   for (const result of [applied, refused]) {
     const text = JSON.stringify(result);
-    assert.ok(!text.includes(planted), "no password, current or rotated, in any response");
+    assert.ok(!text.includes(PLANTED), "no password, current or rotated, in any response");
     assert.ok(!text.includes("httpAuthUsername"), "the username goes with it");
   }
   const change = applied.verification.unexpectedChanges.find((d) => d.field === "httpAuthPassword");
@@ -250,4 +255,60 @@ test("credential-shaped keys are stripped at any depth, everything else kept", (
     name: "n", apiKey: "k", nested: [{ clientSecret: "s", accessToken: "t", target: "#a" }],
   });
   assert.deepEqual(clean, { name: "n", nested: [{ target: "#a" }] });
+});
+
+// --- the backup on disk -----------------------------------------------------
+
+/**
+ * Run a callback with GHOST_INSPECTOR_BACKUP_DIR pointed somewhere else.
+ * @param {string} dir
+ * @param {() => void} run
+ */
+const withBackupDir = (dir, run) => {
+  const previous = process.env.GHOST_INSPECTOR_BACKUP_DIR;
+  process.env.GHOST_INSPECTOR_BACKUP_DIR = dir;
+  try {
+    run();
+  } finally {
+    if (previous === undefined) delete process.env.GHOST_INSPECTOR_BACKUP_DIR;
+    else process.env.GHOST_INSPECTOR_BACKUP_DIR = previous;
+  }
+};
+
+test("the backup file is readable only by its owner", () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "gi-backup-")), "nested", "backups");
+  withBackupDir(dir, () => {
+    const saved = saveBackup(subject({ httpAuthPassword: PLANTED, steps: [{ command: "click" }] }));
+    assert.equal(saved.error, null);
+    assert.equal(statSync(saved.file).mode & 0o777, 0o600);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    const text = readFileSync(saved.file, "utf8");
+    assert.ok(!text.includes(PLANTED), "the file holds no credential");
+    assert.equal(JSON.parse(text).steps.length, 1, "the file holds the steps it exists to restore");
+  });
+});
+
+test("a backup that cannot be written comes back inline, never lost", () => {
+  const blocker = join(mkdtempSync(join(tmpdir(), "gi-backup-")), "a-file");
+  writeFileSync(blocker, "");
+  withBackupDir(join(blocker, "backups"), () => {
+    const saved = saveBackup(subject({ steps: [] }));
+    assert.equal(saved.file, null);
+    assert.ok(saved.error);
+    const result = withBackup(refusedResult(context(subject({ steps: [] })), "x", []), saved, false);
+    assert.ok(result.backup, "the rollback stays in the response when the file failed");
+    assert.ok(result.notes.some((note) => note.includes("could not be written")));
+  });
+});
+
+test("a saved backup is referenced, not inlined, unless verbose", () => {
+  const before = subject({ name: "the test", startUrl: "https://example.com/", steps: [{}, {}] });
+  const saved = { file: "/tmp/backup.json", error: null };
+  const compact = withBackup(refusedResult(context(before), "x", []), saved, false);
+  assert.equal(compact.backup, undefined);
+  assert.equal(compact.backupFile, "/tmp/backup.json");
+  assert.deepEqual(compact.backupSummary, {
+    name: "the test", startUrl: "https://example.com/", stepCount: 2, dateUpdated: BEFORE,
+  });
+  assert.ok(withBackup(refusedResult(context(before), "x", []), saved, true).backup);
 });

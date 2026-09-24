@@ -37,6 +37,9 @@
  * agent. It stays a deliberate `curl` by someone who knows what they are doing.
  */
 
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
   hasNeverExecuted,
   isModule,
@@ -45,6 +48,7 @@ import {
   type TestRecord,
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { backupDir } from "./config.js";
 import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
 /** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
@@ -219,8 +223,11 @@ export interface UpdateResult {
   /** The record's current `dateUpdated`: the `expectedDateUpdated` of the next edit. */
   dateUpdated: string;
   staleness: StalenessVerdict;
-  /** 🔴 The complete prior definition, credentials removed. There is no version history — this is the rollback. */
-  backup: TestRecord;
+  /** 🔴 The complete prior definition, credentials removed. Inline only with `verbose` or when the file failed. */
+  backup?: TestRecord;
+  /** 🔴 Where the prior definition was saved. There is no version history — this file is the rollback. */
+  backupFile?: string;
+  backupSummary?: BackupSummary;
   sentFields: string[];
   verification: {
     stepsMatch: boolean;
@@ -239,6 +246,71 @@ export interface UpdateOptions {
   expectedDateUpdated: string;
   /** Required to proceed when guard 1 reports the test as stale. */
   confirmStaleDiagnosis?: boolean | undefined;
+  /** Also return the backup inline, for clients that cannot read the file. */
+  verbose?: boolean | undefined;
+}
+
+export interface BackupSummary {
+  name: string;
+  startUrl: string;
+  stepCount: number;
+  dateUpdated: string;
+}
+
+export interface BackupOutcome {
+  file: string | null;
+  error: string | null;
+}
+
+/**
+ * Guard 2 on disk: saves the prior definition, credentials removed, readable only by its owner.
+ *
+ * @param record The test as read before the write.
+ * @return The file written, or why it could not be.
+ */
+export function saveBackup(record: TestRecord): BackupOutcome {
+  const dir = backupDir();
+  const stamp = String(record.dateUpdated ?? "undated").replace(/[:.]/g, "-");
+  const file = join(dir, `${String(record._id ?? "unknown")}-${stamp}.json`);
+  try {
+    const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (created !== undefined) chmodSync(dir, 0o700);
+    writeFileSync(file, JSON.stringify(stripCredentials(record), null, 2), { mode: 0o600 });
+    chmodSync(file, 0o600);
+    return { file, error: null };
+  } catch (error) {
+    return { file: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Points a result at its backup file, keeping the backup inline when asked or when the file failed.
+ *
+ * @param result A result carrying the backup inline.
+ * @param saved What saveBackup reported.
+ * @param verbose Keep the inline backup even though the file exists.
+ * @return The result the caller receives.
+ */
+export function withBackup(result: UpdateResult, saved: BackupOutcome, verbose: boolean): UpdateResult {
+  const record: Partial<TestRecord> = result.backup ?? {};
+  const summary: BackupSummary = {
+    name: String(record.name ?? ""),
+    startUrl: String(record.startUrl ?? ""),
+    stepCount: Array.isArray(record.steps) ? record.steps.length : 0,
+    dateUpdated: String(record.dateUpdated ?? ""),
+  };
+  if (saved.file === null) {
+    return {
+      ...result,
+      backupSummary: summary,
+      notes: [
+        ...result.notes,
+        `⚠️ The backup file could not be written (${saved.error}), so the prior definition is inline as \`backup\`. Keep it: it is the only rollback.`,
+      ],
+    };
+  }
+  const { backup, ...rest } = result;
+  return { ...rest, ...(verbose ? { backup } : {}), backupFile: saved.file, backupSummary: summary };
 }
 
 /** What updateTest knows before it writes, shared by every response it builds. */
@@ -289,7 +361,7 @@ export function appliedResult(
   const dateUpdated = String(after.dateUpdated ?? "");
 
   const notes: string[] = [
-    "🔴 `backup` is the complete prior definition and the only rollback that exists. Keep it until you are sure of this change.",
+    "🔴 The backup is the complete prior definition and the only rollback that exists. Keep it until you are sure of this change.",
     `dateUpdated is now "${dateUpdated}": pass this as expectedDateUpdated for the next edit.`,
   ];
   if (stepDiffs.length > 0) {
@@ -370,13 +442,16 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   ];
 
   const context: WriteContext = { before, staleness, sentFields, chainLength: chain.length };
-  const refuse = (why: string, notes: string[]): UpdateResult => refusedResult(context, why, notes);
+  const saved = saveBackup(before);
+  const verbose = options.verbose === true;
+  const refuse = (why: string, notes: string[]): UpdateResult =>
+    withBackup(refusedResult(context, why, notes), saved, verbose);
 
   if (String(before.dateUpdated ?? "") !== options.expectedDateUpdated) {
     return refuse("concurrency token mismatch", [
       `expectedDateUpdated was "${options.expectedDateUpdated}" but the record now reads "${String(before.dateUpdated ?? "")}".`,
       "Someone changed this test since you read it, or you never read it. Nothing was written.",
-      "🔴 Do not simply resend with the value above. Your change was composed against a definition that is no longer stored, so replaying it would overwrite whatever that other edit did — and there is no version history to recover it from. Call gi_get_test, read what is there now, redo the change against it, and pass the dateUpdated it returns. The current definition is in `backup` below if you want to diff first.",
+      "🔴 Do not simply resend with the value above. Your change was composed against a definition that is no longer stored, so replaying it would overwrite whatever that other edit did — and there is no version history to recover it from. Call gi_get_test, read what is there now, redo the change against it, and pass the dateUpdated it returns. The current definition is in the backup (`backupFile`, or `backup` with verbose) if you want to diff first.",
     ]);
   }
 
@@ -402,7 +477,7 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
 
   // Guard 4. HTTP 200 does not prove the write landed as intended.
   const after = await request<TestRecord>("GET", `tests/${options.testId}`);
-  return appliedResult(context, body, after);
+  return withBackup(appliedResult(context, body, after), saved, verbose);
 }
 
 export interface MoveResult {

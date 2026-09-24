@@ -537,8 +537,11 @@ server.registerTool(
         "if anything changed after it, the test is stale and the call is refused, " +
         "because a fix diagnosed from a failure that describes a deleted version " +
         "is diagnosed from nothing — and a colleague may already have fixed it. " +
-        "(2) The complete prior definition comes back as `backup`, on refusals " +
-        "too; it is the only rollback that exists, so keep it. (3) The change is " +
+        "(2) The complete prior definition, credentials removed, is saved to " +
+        "`backupFile` (under GHOST_INSPECTOR_BACKUP_DIR, owner-only) on refusals " +
+        "too, with a `backupSummary` beside it. The file is the rollback; clients " +
+        "without filesystem access should pass verbose:true to get it inline as " +
+        "`backup`. If the file cannot be written it comes back inline anyway. (3) The change is " +
         "applied. (4) The record is re-read and diffed, both that what was sent " +
         "landed exactly and that every field you did not send is untouched — " +
         "`HTTP 200` proves neither.\n\n" +
@@ -573,11 +576,15 @@ server.registerTool(
           .describe(
             "Proceed even though the chain changed after the last run. Only after verifying the current definition yourself; otherwise you may be overwriting someone else's fix.",
           ),
+        verbose: z
+          .boolean()
+          .optional()
+          .describe("Also return the prior definition inline as `backup`. For clients that cannot read `backupFile`."),
       },
       // Destructive is the honest word: no version history, no recycle bin.
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis }) =>
+    async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis, verbose }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         updateTest({
           testId,
@@ -585,6 +592,7 @@ server.registerTool(
           steps: steps as Steps | undefined,
           name,
           confirmStaleDiagnosis,
+          verbose,
         }),
       ),
   );
