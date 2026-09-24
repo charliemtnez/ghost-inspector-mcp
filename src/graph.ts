@@ -12,6 +12,17 @@ import { request, type TestRecord } from "./client.js";
 
 export type Steps = Array<Record<string, unknown>>;
 
+/**
+ * A step condition's script. Ghost Inspector stores it as {statement}; a bare string is accepted too.
+ *
+ * @param raw A step's `condition` field.
+ * @return The script, or null when there is none.
+ */
+export function conditionStatement(raw: unknown): string | null {
+  const text = typeof raw === "string" ? raw : raw && typeof raw === "object" ? (raw as { statement?: unknown }).statement : null;
+  return typeof text === "string" && text.trim() !== "" ? text : null;
+}
+
 /** Ghost Inspector's documented nesting limit. Exceeding it is a finding. */
 export const DOCUMENTED_MAX_DEPTH = 10;
 

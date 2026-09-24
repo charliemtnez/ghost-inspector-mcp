@@ -31,7 +31,7 @@ import {
 } from "./client.js";
 import { requireOrgId } from "./config.js";
 import { logScript, probeScript, selectorsOf, stopCondition } from "./guard-script.js";
-import { DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
+import { conditionStatement, DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
 import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, type Evidence } from "./results.js";
 import {
   collectVariables,
@@ -168,7 +168,7 @@ async function expand(
 
   for (const [index, step] of steps.entries()) {
     const command = str(step["command"]);
-    const own = typeof step["condition"] === "string" ? step["condition"] : null;
+    const own = conditionStatement(step["condition"]);
     if (command !== "execute") {
       const target = step["target"];
       out.push({
@@ -737,7 +737,7 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
             target: step.authoredTarget,
             value: step.value,
             ...(step.variableName ? { variableName: step.variableName } : {}),
-            ...(step.condition ? { condition: step.condition } : {}),
+            ...(step.condition ? { condition: { statement: step.condition } } : {}),
             ...(step.optional ? { optional: true } : {}),
           })),
           ...settings.values,

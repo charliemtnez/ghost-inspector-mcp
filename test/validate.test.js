@@ -457,3 +457,38 @@ test("a step skipped by its own condition is not called unreached", async () => 
   const read = readGuardedResult(sent.map((s, i) => ran(s, passing[i])), { giGuardLog: '{"stopped":null,"blocked":[]}' }, sent, map);
   assert.deepEqual(read.outcomes.map((o) => o.status), ["passed", "skipped by condition", "passed"]);
 });
+
+// --- conditions in their stored shape ----------------------------------------
+
+test("a stored condition, an object with a statement, is carried into the expansion", async () => {
+  // Every condition in a real account is stored as {statement}. Read as a
+  // string it vanished, and validations ran conditional steps unconditionally.
+  const { steps } = await expandSteps(
+    [
+      { command: "click", target: "#a", condition: { statement: "return window.a;" } },
+      { command: "execute", value: "mod", condition: { statement: "return outer();" } },
+    ],
+    async () => ({ name: "Mod", steps: [{ command: "assign", target: "#b", condition: { statement: "return inner();" } }] }),
+  );
+  assert.equal(steps[0].condition, "return window.a;");
+  assert.match(steps[1].condition, /outer\(\)/);
+  assert.match(steps[1].condition, /inner\(\)/);
+});
+
+test("conditions are sent in the shape Ghost Inspector stores", async () => {
+  // Observed live: on-demand refuses a string condition with
+  // "Test.steps[0].condition should be object,null".
+  const run = await prepared({ steps: [{ command: "assign", target: "#a", value: "x" }, { command: "click", target: "#b", condition: { statement: "return 1;" } }] });
+  for (const step of run.body.steps) {
+    assert.ok(step.condition === undefined || (typeof step.condition === "object" && typeof step.condition.statement === "string"), JSON.stringify(step.condition));
+  }
+  assert.ok(run.body.steps.slice(0, -1).every((step) => step.condition), "every sent step but the closing log is gated");
+});
+
+test("a stored condition that submits is caught", async () => {
+  const { steps } = await expandSteps(
+    [{ command: "click", target: "#next", condition: { statement: "document.forms[0].requestSubmit(); return true;" } }],
+    async () => ({ name: "", steps: [] }),
+  );
+  assert.equal(findSubmit(steps).index, 0);
+});
