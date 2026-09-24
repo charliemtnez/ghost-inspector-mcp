@@ -10,6 +10,7 @@
  */
 
 import { request, type TestRecord } from "./client.js";
+import { pool, REQUEST_CONCURRENCY } from "./graph.js";
 
 /** A test as the caller needs it before editing: identity, token, definition. */
 export interface TestDetail {
@@ -86,13 +87,32 @@ export function toDetail(test: TestRecord, fallbackId = ""): TestDetail {
 }
 
 /**
- * Fetches one test with its steps and its concurrency token.
+ * Reads one test, the shape an edit is composed against.
  *
- * @param testId The 24-character test id.
- * @returns Identity, definition, and the `dateUpdated` the write path requires.
- * @throws {GhostInspectorError} when the id does not exist or the call fails.
- * @throws {ConfigError} when the API key is not configured.
+ * @param testId The test.
+ * @return The test's own definition and its concurrency token.
+ * @throws {GhostInspectorError} when the test does not exist or a call fails.
  */
 export async function getTest(testId: string): Promise<TestDetail> {
   return toDetail(await request<TestRecord>("GET", `tests/${testId}`), testId);
+}
+
+/**
+ * Reads several ids at bounded concurrency; a failure is recorded on its own id and never sinks the rest.
+ *
+ * @param ids The ids to read, in the order results are wanted.
+ * @param read Reads one id.
+ * @return One entry per id: its result, or its error message.
+ */
+export async function readBatch<T>(
+  ids: string[],
+  read: (id: string) => Promise<T>,
+): Promise<Array<{ id: string; result?: T; error?: string }>> {
+  return pool(ids, REQUEST_CONCURRENCY, async (id) => {
+    try {
+      return { id, result: await read(id) };
+    } catch (error) {
+      return { id, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 }

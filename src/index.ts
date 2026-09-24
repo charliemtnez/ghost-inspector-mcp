@@ -21,7 +21,7 @@ import { redact, runsAllowed, writesAllowed } from "./config.js";
 import { stripCredentials } from "./redact-record.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
-import { getTest } from "./detail.js";
+import { getTest, readBatch } from "./detail.js";
 import { findTests } from "./find.js";
 import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
@@ -87,6 +87,27 @@ async function safeText(run: () => Promise<unknown>) {
       isError: true,
     };
   }
+}
+
+/**
+ * Runs a read for one id or a batch of them, refusing both or neither.
+ *
+ * @param testId A single id.
+ * @param testIds Up to 20 ids.
+ * @param read Reads one id.
+ * @return The single result, or {results} with one entry per id.
+ * @throws {Error} when both or neither are given.
+ */
+async function oneOrMany<T>(
+  testId: string | undefined,
+  testIds: string[] | undefined,
+  read: (id: string) => Promise<T>,
+): Promise<T | { results: Array<{ id: string; result?: T; error?: string }> }> {
+  if ((testId === undefined) === (testIds === undefined)) {
+    throw new Error("Pass exactly one of testId (one test) or testIds (up to 20).");
+  }
+  if (testId !== undefined) return read(testId);
+  return { results: await readBatch(testIds ?? [], read) };
 }
 
 /**
@@ -374,11 +395,17 @@ server.registerTool(
       "module inline. If the step you need to fix came from a module, edit that " +
       "module's test, not this one.",
     inputSchema: {
-      testId: z.string().describe("The 24-character test id."),
+      testId: z.string().optional().describe("The 24-character test id."),
+      testIds: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error; one failure does not sink the rest."),
     },
     annotations: READ_ONLY,
   },
-  async ({ testId }) => safeText(() => getTest(testId)),
+  async ({ testId, testIds }) => safeText(() => oneOrMany(testId, testIds, (id) => getTest(id))),
 );
 
 server.registerTool(
@@ -420,7 +447,13 @@ server.registerTool(
       "outside the steps — a start URL that would not load), and results that " +
       "have been purged, which it reports as a horizon instead of as silence.",
     inputSchema: {
-      testId: z.string().describe("The 24-character test id."),
+      testId: z.string().optional().describe("The 24-character test id."),
+      testIds: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error; one failure does not sink the rest."),
       runsBack: z
         .number()
         .int()
@@ -430,7 +463,8 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
+  async ({ testId, testIds, runsBack }) =>
+    safeText(() => oneOrMany(testId, testIds, (id) => diagnoseTest({ testId: id, runsBack }))),
 );
 
 server.registerTool(
