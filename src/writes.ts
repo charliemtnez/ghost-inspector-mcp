@@ -52,7 +52,7 @@ import { backupDir } from "./config.js";
 import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
 /** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
-const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "sequence"] as const;
+const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "private", "sequence"] as const;
 
 /**
  * Ghost Inspector normalises steps on write: it fills `condition: null`,
@@ -72,6 +72,7 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
     variableName: text(step["variableName"]),
     condition: conditionStatement(step["condition"]),
     optional: step["optional"] === true,
+    private: step["private"] === true,
     sequence: typeof step["sequence"] === "number" ? step["sequence"] : null,
   };
 }
@@ -265,7 +266,7 @@ export interface UpdateOptions {
   testId: string;
   steps?: Steps | undefined;
   name?: string | undefined;
-  /** Accepted by `POST /tests/{id}/` — not verified live; guard 4 checks every write of it. */
+  /** Accepted by `POST /tests/{id}/`, verified live; guard 4 still reads it back on every write. */
   startUrl?: string | undefined;
   /** The `dateUpdated` the caller believes is current. Proof it read the record. */
   expectedDateUpdated: string;

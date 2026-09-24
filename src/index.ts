@@ -323,10 +323,10 @@ const STEP_SCHEMA = z.object({
       "One of: assertElementNotPresent, assertElementNotVisible, assertElementPresent, assertElementVisible, assertEval, assertNotText, assertText, assertTextNotPresent, assertTextPresent, assign, click, dragAndDrop, eval, execute, exit, extract, extractEval, keypress, mouseOver, open, pause, refresh, screenshot, store.",
     ),
   target: z
-    .string()
+    .union([z.string(), z.array(z.object({ selector: z.string() }).passthrough())])
     .optional()
     .describe(
-      "CSS selector. 🔴 REQUIRED by the text assertions: assertTextPresent with no target fails with \"Text not contained\" even when the text is plainly on the page, which reads as a product bug rather than a malformed step — scope it to body at minimum. Anchor to stable semantic attributes (data-*, name, id) and scope to a container id. Never :nth-of-type, never XPath matching visible copy, never long chains of presentational classes. A selector matching more than one element is a latent failure. Attribute selectors need brackets: [data-x=\"y\"], not data-x=\"y\", which is not valid CSS and never matched anything.",
+      "CSS selector, or an array of fallback selectors ({selector}) tried in order, as gi_get_test returns them. 🔴 REQUIRED by the text assertions: assertTextPresent with no target fails with \"Text not contained\" even when the text is plainly on the page, which reads as a product bug rather than a malformed step — scope it to body at minimum. Anchor to stable semantic attributes (data-*, name, id) and scope to a container id. Never :nth-of-type, never XPath matching visible copy, never long chains of presentational classes. A selector matching more than one element is a latent failure. Attribute selectors need brackets: [data-x=\"y\"], not data-x=\"y\", which is not valid CSS and never matched anything.",
     ),
   value: z
     .string()
@@ -343,6 +343,7 @@ const STEP_SCHEMA = z.object({
       "JavaScript deciding whether the step runs, with an explicit return. Stored as {statement}, which gi_get_test returns; a bare string is written in that shape. AND-ed with conditions inherited from enclosing imports.",
     ),
   optional: z.boolean().optional().describe("Continue when this step fails."),
+  private: z.boolean().optional().describe("Hide the step's value in results, for secrets. Kept on every write; omitting it clears it."),
 });
 
 server.registerTool(
@@ -446,7 +447,8 @@ server.registerTool(
       "`failingStep.mapping` says how that position was found. `position`: the " +
       "current definition was expanded locally and lines up with the result step " +
       "for step. `stored sequence`: it did not, and the result's own stored " +
-      "position was used because the owner's sequences are exactly 0..n-1. " +
+      "position was used because the run recorded a distinct one for every step " +
+      "of that owner. " +
       "`unmapped`: neither held, so sequenceInOwner and authoredTargets are " +
       "unknown — never guessed. A result's own `extra.source.sequence` is copied " +
       "from the stored `sequence` field, which a client that omits it leaves at 0 " +
@@ -643,8 +645,9 @@ server.registerTool(
       "(C) Tripwire: armed before every step on every page, click or not, it " +
       "blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, " +
       "and `guard.blockedRequests` lists them. It does not stop the run. " +
-      "Residual gaps: a script that saved window.fetch before the page's first " +
-      "step ran, and data sent by a GET (a pixel or a navigation).\n" +
+      "Residual gaps: a script that saved window.fetch or form.submit before the " +
+      "page's first step ran, a WebSocket, anything inside a child frame, and data " +
+      "sent by a GET (a pixel or a navigation).\n" +
       "Step numbers in `plan`, `steps` and `guard` count plan steps; the injected " +
       "ones never shift them. There is no way to make this tool submit; that " +
       "stays a deliberate curl.\n\n" +
@@ -736,7 +739,7 @@ server.registerTool(
     description:
       "Read-only. Returns exactly what gi_validate_test would send: modules inlined, " +
       "{{variables}} resolved from `variables`, the suite and the organization, and " +
-      "all three submit-guard layers applied. Nothing is sent to Ghost Inspector, " +
+      "all three submit-guard layers applied. Nothing is executed, only definitions are read: " +
       "no browser starts, and no organization id is needed. Use it before any " +
       "validation of a test that touches production.\n\n" +
       "`plan` lists the steps in order, numbered as every other report numbers " +
@@ -892,8 +895,9 @@ server.registerTool(
         "`expectedResultId` is required: the result whose screenshot you looked at, " +
         "from gi_screenshot_status. The accept is refused if a newer run has landed " +
         "since, if the latest run is still going, or if its comparison passed or did " +
-        "not run (there is nothing to accept then), so it can never bless an image " +
-        "nobody saw. After the accept the test is re-read and `verification` shows " +
+        "not run (there is nothing to accept then). The check is read-then-accept with " +
+        "no compare-and-swap, so a run landing in the moment between them could still " +
+        "slip through: it catches a stale id, not a genuine race. After the accept the test is re-read and `verification` shows " +
         "`screenshotComparePassing`. Accepting does not move `dateUpdated`, so it does " +
         "not invalidate a token you already hold.",
       inputSchema: {

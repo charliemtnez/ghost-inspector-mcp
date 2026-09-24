@@ -219,7 +219,7 @@ export async function proposeRepair(testId: string): Promise<RepairPlan> {
   } else {
     nextSteps.push(
       "No rewrite is proposed. Every rule this server can apply without seeing the page came back clean, so the cause is in the page or in a selector that needs a human to look at the DOM.",
-      "gi_validate_test with dryRun shows the fully inlined run, which is usually the fastest way to see what the step is actually pointed at.",
+      "gi_plan_test shows the fully inlined run, which is usually the fastest way to see what the step is actually pointed at.",
     );
   }
   if (owner.isModule) {

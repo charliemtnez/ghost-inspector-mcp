@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stopCondition } from "../dist/guard-script.js";
+import { collectVariables } from "../dist/variables.js";
 
 import {
   andConditions,
@@ -24,6 +25,7 @@ import {
   prepareRun,
   settingsCheck,
   settingsFor,
+  validationEvidence,
 } from "../dist/validate.js";
 
 const S = (command, target = "", value = "", fromModule = null) => ({
@@ -295,6 +297,7 @@ test("an unresolved variable refuses before anything is sent", async () => {
   assert.equal(run.body, null, "no body means nothing can be POSTed");
   assert.deepEqual(run.unresolved.map((u) => u.name), ["nope"]);
   assert.match(run.refusal, /variables/);
+  assert.match(run.refusal, /organization was not read/, "an unread organization is not reported as defining nothing");
   const fine = await prepared({ startUrl: "https://{{sub}}.example.com/", variables: { sub: "www" } });
   assert.equal(fine.body.startUrl, "https://www.example.com/");
   assert.equal(fine.refusal, null);
@@ -518,4 +521,32 @@ test("a plan with no click still arms the tripwire before its first step", async
   const { sent, map } = injectGuards(steps);
   assert.equal(map.filter((m) => m.kind === "probe").length, 0);
   assert.match(sent[0].condition, /HTMLFormElement\.prototype\.submit/, "the first step's own condition arms it");
+});
+
+test("the guard's own extractions never come back as evidence", () => {
+  // giGuardLog keeps every blocked URL with its query string; guard reports
+  // the summarised version, so the raw one must not travel alongside it.
+  const evidence = validationEvidence({
+    extractions: { giGuardLog: '{"blocked":["fetch POST https://example.com/c?sid=secret"]}', giGuardProbe3: "clear", formSelector: "#lead" },
+  }, false);
+  assert.deepEqual(evidence.extractions, { formSelector: "#lead" });
+});
+
+test("a private value is masked in its URL-encoded and JSON-escaped forms too", () => {
+  const hidden = 'ab/c+d== "q"';
+  const vars = collectVariables({ suite: [{ name: "pin", value: hidden, private: true }] });
+  const report = maskPrivate({
+    urls: [`https://example.com/?pin=${encodeURIComponent(hidden)}`, `https://example.com/?pin=${encodeURIComponent(hidden).replace(/%20/g, "+")}`],
+    endUrl: `https://example.com/${encodeURI(hidden)}`,
+    log: JSON.stringify({ value: hidden }),
+  }, vars);
+  const text = JSON.stringify(report);
+  for (const form of [hidden, encodeURIComponent(hidden), encodeURI(hidden), JSON.stringify(hidden).slice(1, -1)]) {
+    assert.ok(!text.includes(form), `leaked as ${form}`);
+  }
+});
+
+test("a private step stays private in the validation body", async () => {
+  const run = await prepared({ steps: [{ command: "assign", target: "#pin", value: "1234", private: true }] });
+  assert.equal(run.body.steps[0].private, true);
 });

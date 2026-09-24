@@ -6,6 +6,113 @@ Tool names, input schemas and MCP annotations are part of the interface here: a
 calling model's behaviour depends on them, and a client may gate permissions on
 them. Changes to any of those are listed even when no code path moved.
 
+## [0.3.0] — 2026-09-24
+
+Fixes from a real-use audit. A failure inside a module pointed at the wrong
+step. A validation ran against the wrong host with the wrong user agent. The
+submit guard missed what it could not read. A stored basic-auth password
+reached the transcript. Six tools are added to date regressions, find tests,
+group failures and handle screenshots.
+
+### Fixed
+
+- 🔴 **Stored credentials never reach a response.** Test and suite records carry
+  `httpAuthUsername` / `httpAuthPassword` in plain text, and `gi_update_test`
+  returned them inside `backup`. Credential-shaped keys are stripped from every
+  tool result, at the source and again on the way out. Private variable values
+  are masked as `(private)`, raw, URL-encoded or JSON-escaped, in validation
+  reports and in stored-run reports from `gi_run_test` and `gi_test_result`.
+- 🔴 **A failure inside a module maps to the step that failed.**
+  `extra.source.sequence` copies the stored `sequence` field, which a client
+  that omits it leaves at 0 on every step, so every failure mapped to the
+  module's first step. `gi_test_result` now aligns the result with a local
+  expansion of the current definition, by position. It falls back to the stored
+  sequence only when that is exactly `0..n-1`, and otherwise reports the step as
+  `unmapped`. `gi_propose_repair` refuses an unmapped step.
+- **The write path stores each step's position** as its `sequence`, and guard 4
+  verifies it, along with `name` and `startUrl`.
+- 🔴 **Validations resolve `{{variables}}`.** On-demand execution ignores custom
+  variables and runs an unknown one as an empty string, so a suite-variable host
+  became `https://.example.com/` and could still pass. Variables resolve from the
+  caller, then the suite, then the organization. An unresolved one refuses the
+  run before anything is sent.
+- **Validations run with the suite's configuration.** User agent, region,
+  language, the delays and the rest are sent in the body, not only viewport and
+  browser. `settingsCheck` reports any setting the result says it did not
+  honour. HTTP basic auth is never sent.
+- 🔴 **Step conditions are read and written as `{statement}`**, the shape Ghost
+  Inspector stores them in. Read as strings they were dropped, so validations
+  ran conditional steps unconditionally and guard 4 missed a changed condition.
+  On-demand refuses a string condition outright.
+- 🔴 **The submit guard has three layers.**
+  - (A) The static cut now also reads `extractEval` bodies and every step
+    condition for `.submit(`, `requestSubmit(`, `.click(`, `dispatchEvent(`,
+    `fetch(`, `XMLHttpRequest`, `sendBeacon(`, `$.ajax`, `$.post` and `axios`.
+  - (B) A probe in the browser stops the run before any click on a form's
+    submit control, on a non-field control inside a form, or on a target that
+    cannot be resolved.
+  - (C) A tripwire, armed before every step, blocks submit events,
+    `form.submit()`, non-GET fetch and XHR (and any XHR opened before it
+    armed), and `sendBeacon`, and reports what it blocked.
+
+  `gi_run_test` resolves `{{variables}}` before its own submit check, and also
+  asks for `confirmSubmit` when a button, form control or variable-filled target
+  is clicked after a field was filled.
+- **Stored steps round-trip.** Fallback-array targets and each step's `private`
+  flag are accepted by every tool that takes steps. Guard 4 compares `private`,
+  and validations send it.
+- **An optional click on an absent element is skipped** by the in-browser
+  probe, not treated as a reason to stop the whole validation.
+- **An older run is judged against its own date.** `gi_test_result` with
+  `runsBack` compares the chain with that run, not the latest. A stored
+  sequence is trusted only when the run itself recorded distinct ones.
+- **`gi_run_test` reports where a submitting run went** instead of asserting that
+  it submitted, and says when the run ended on the page it started on.
+- **Run reports tell the truth about what ran.** `stepsExecuted` counts only steps
+  that ran. `executionTimeMs` is rebuilt from the timestamps when absent, and a
+  result is re-read until its timing is filled. Console output is read from the
+  fields the API actually sends.
+
+### Added
+
+- **`gi_plan_test`** (read-only): exactly what a validation would send, with every
+  guard decision and variable, and whether it would be refused. It only reads
+  definitions: no browser starts and no organization id is needed.
+- **`gi_find_tests`** (read-only): tests by name, folder, suite or step, with ids.
+- **`gi_test_history`** (read-only): up to 500 runs, the last pass, and the first
+  failure of the current red streak, with an honest horizon.
+- **`gi_failure_groups`** (read-only): red tests grouped by when they started
+  failing, across suites, with common errors and targets.
+- **`gi_screenshot_status`** (read-only) and **`gi_accept_screenshot`** (write
+  gate). Accepting is refused unless `expectedResultId` is still the latest
+  finished result with a failing comparison, and the response returns the
+  baseline it replaced. Accepting does not move `dateUpdated`.
+- `folder` / `suite` filters on `gi_stale_tests`, `gi_vacuous_tests` and
+  `gi_module_usage`. The module listing keeps its account-wide blast radius, and
+  a scoped scan counts unreadable definitions, nested modules included, with a
+  warning that a genuine failure may then be stale.
+- `testIds` (1–20) on `gi_get_test` and `gi_test_result`; `expandModules` on
+  `gi_get_test`.
+- `startUrl` on `gi_update_test` and `gi_duplicate_test`.
+- `gi_validate_test`: `suiteId`, `variables`, `stopBefore`, `verbose`, plus
+  `resultId`, `evidence`, per-step `value`, and statuses `skipped by condition`
+  and `stopped by guard`.
+- Backups on disk: `GHOST_INSPECTOR_BACKUP_DIR` (default
+  `~/.ghost-inspector-mcp/backups`, directory 700, file 600, no credentials), on
+  every `gi_update_test` path, refusals included.
+
+### Changed
+
+- **Contract:** `gi_module_usage` `importerNames` → `importers: [{id, name}]`, and
+  modules carry `id`. `gi_inventory` `failingTests` → `[{id, name}]`.
+  `gi_validate_test` `consoleErrors` → `evidence.console`. `guard` is always an
+  object, and its static fields are null when nothing was cut.
+- `gi_update_test` returns `backupFile` + `backupSummary`, plus the new
+  `dateUpdated` for the next edit. The full backup is inline only with
+  `verbose: true`, or when the file cannot be written.
+- `gi_validate_test`'s `dryRun` still works and is deprecated in favour of
+  `gi_plan_test`. After a run, `plan` is omitted unless `verbose`.
+
 ## [0.2.0] — 2026-08-06
 
 The diagnose → repair → verify cycle. 0.1.x could say which tests were worth

@@ -8,8 +8,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { assessStaleness } from "../dist/writes.js";
 import {
   alignByPosition,
+  asOfRun,
   authoredSelectors,
   describeFailingStep,
   horizonVerdict,
@@ -210,4 +212,36 @@ test("a result whose commands differ from the definition is not aligned", async 
   const { expanded, result } = await auditRun(12);
   const edited = result.map((step, i) => (i === 3 ? { ...step, command: "click" } : step));
   assert.equal(alignByPosition(edited, expanded, { stale: false, truncated: false }), null);
+});
+
+test("an old run is judged stale against its own date, not the latest run's", () => {
+  // Run -3 failed; the step was edited after it; run 0 passed after the edit.
+  const test = {
+    _id: "t", name: "t", passing: true,
+    dateUpdated: "2026-09-10T00:00:00Z", dateExecutionFinished: "2026-09-20T00:00:00Z",
+  };
+  const oldRun = { _id: "r3", passing: false, dateExecutionFinished: "2026-09-01T00:00:00Z" };
+  assert.equal(assessStaleness(test, [], false).verdict, "current", "against the latest run nothing changed");
+  const verdict = assessStaleness(asOfRun(test, oldRun), [], false);
+  assert.equal(verdict.verdict, "stale", "against the run being diagnosed, the edit came after");
+  assert.equal(verdict.currentlyFailing, true, "and that run is the red one");
+});
+
+test("a module re-saved after the run is not mapped through the zeroed sequences the run recorded", async () => {
+  // Re-saving a zeroed module gives it clean sequences, but the result was
+  // recorded before, with every step at 0, and the chain is now stale.
+  const { owners, expanded, result } = await auditRun(12);
+  const mod = owners.get("mod");
+  owners.set("mod", { ...mod, steps: mod.steps.map((step, i) => ({ ...step, sequence: i })) });
+  const step = locateFailingStep(result, expanded, owners, { stale: true, truncated: false }, "root");
+  assert.equal(step.mapping, "unmapped");
+  assert.deepEqual(step.authoredTargets, [], "never the module's step 0");
+});
+
+test("a result whose own sequences are distinct can still be mapped through them", async () => {
+  const { owners, expanded, result } = await auditRun(12);
+  const recorded = result.map((r, i) => ({ ...r, extra: { rootSequence: expanded[i].rootIndex, source: { test: expanded[i].ownerId, sequence: expanded[i].indexInOwner } } }));
+  const step = locateFailingStep(recorded, expanded, owners, { stale: true, truncated: false }, "root");
+  assert.equal(step.mapping, "stored sequence");
+  assert.deepEqual(step.authoredTargets, [SUBMIT]);
 });

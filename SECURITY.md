@@ -18,11 +18,19 @@ that is the most valuable thing you can find:
 
 - A path where the API key reaches a log line, an error message, a tool response,
   the filesystem, or any process other than the Ghost Inspector API.
-- A way to make a mutating tool run without `GHOST_INSPECTOR_ALLOW_WRITES=true`.
 - A way to skip one of the four write guards, or to satisfy the concurrency token
   without having read the record.
-- A way to make `gi_validate_test` submit a form. It truncates the run before any
-  step that could, and there is no option to turn that off.
+- A way to make a mutating tool run without `GHOST_INSPECTOR_ALLOW_WRITES=true`,
+  or `gi_run_test` without `GHOST_INSPECTOR_ALLOW_RUNS=true`.
+- A way to make `gi_validate_test` submit a form or send form data past its
+  three guard layers — the static cut, the in-browser probe before every click,
+  and the tripwire armed before every step — beyond the gaps its description
+  documents (a script that saved `window.fetch` or `form.submit` before the page's
+  first step, a WebSocket, anything inside a child frame, and data sent by a GET).
+- A path where a basic-auth credential stored on a test or suite, or a private
+  variable's value, reaches a tool response or a backup file.
+- A way to make `gi_accept_screenshot` accept a result other than the one named
+  in `expectedResultId`.
 
 ## How the credential is handled
 
@@ -40,6 +48,19 @@ can delete anything. Per-user keys buy attribution and instant revocation, not
 least privilege, which is why the write gate and the guards matter. Use your own
 key, never a shared one, and regenerate it from Account Settings → API Access if
 you suspect exposure; that disables the previous key immediately.
+
+## Other credentials this server sees
+
+- Ghost Inspector stores HTTP basic-auth usernames and passwords on tests and
+  suites in plain text, and returns them with the record. Every tool result has
+  credential-shaped keys (`httpAuth*`, and any key naming a password, secret,
+  token or API key) removed before it is returned, and validations never send
+  basic auth.
+- A suite's private variables are substituted into a validation so the browser
+  receives them, and are masked as `(private)` everywhere in the report.
+- The write path saves each test's prior definition to
+  `GHOST_INSPECTOR_BACKUP_DIR` (default `~/.ghost-inspector-mcp/backups`) with the
+  same keys removed, in a directory it creates as 700, as files with mode 600.
 
 ## Scope
 

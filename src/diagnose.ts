@@ -29,7 +29,8 @@ import {
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
 import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
-import { expandSteps, type ExpandedStep } from "./validate.js";
+import { expandSteps, maskPrivate, type ExpandedStep } from "./validate.js";
+import { variablesFor, type VariableValue } from "./variables.js";
 import { assessStaleness, type StalenessVerdict } from "./writes.js";
 
 /** What the run's own record says, independent of any step. */
@@ -207,6 +208,20 @@ function storedLocation(step: Record<string, unknown>): StepLocation {
 }
 
 /**
+ * The test record with the dates and verdict of the given run.
+ *
+ * @param test The test record.
+ * @param result The run being diagnosed.
+ * @return A copy to compare the chain against.
+ */
+export function asOfRun(test: TestRecord, result: RunResult): TestRecord {
+  const copy: TestRecord = { ...test, passing: result.passing ?? null };
+  if (result["dateExecutionFinished"] !== undefined) copy.dateExecutionFinished = String(result["dateExecutionFinished"]);
+  if (result["dateExecutionTriggered"] !== undefined) copy.dateExecutionTriggered = String(result["dateExecutionTriggered"]);
+  return copy;
+}
+
+/**
  * Pairs each result step with the expanded definition step at the same position.
  *
  * @param resultSteps Steps of a result, in run order.
@@ -232,6 +247,19 @@ export function alignByPosition(
  */
 export function sequencesUsable(steps: Steps): boolean {
   return steps.every((step, i) => step["sequence"] === i);
+}
+
+/**
+ * Whether the sequences a result recorded for one owner's steps can locate them: all present, none repeated.
+ *
+ * @param resultSteps Steps of the result.
+ * @param ownerId The test whose steps are checked.
+ * @return False when any recorded sequence is missing or repeats, as it does for a list saved without them.
+ */
+function recordedSequencesDistinct(resultSteps: Array<Record<string, unknown>>, ownerId: string): boolean {
+  const recorded = resultSteps.map(storedLocation).filter((location) => location.ownerId === ownerId);
+  const sequences = recorded.map((location) => location.sequenceInOwner);
+  return sequences.length > 0 && sequences.every((n) => n !== null) && new Set(sequences).size === sequences.length;
 }
 
 /**
@@ -268,9 +296,8 @@ export function locateFailingStep(
 
   const stored = storedLocation(step);
   const owner = owners.get(stored.ownerId);
-  const root = owners.get(rootId);
-  if (owner && stored.sequenceInOwner !== null && sequencesUsable(owner.steps)) {
-    const rootSequence = root && sequencesUsable(root.steps) ? stored.rootSequence : null;
+  if (owner && stored.sequenceInOwner !== null && recordedSequencesDistinct(resultSteps, stored.ownerId)) {
+    const rootSequence = recordedSequencesDistinct(resultSteps, rootId) ? stored.rootSequence : null;
     return describeFailingStep(step, owner.steps, owner.name, owner.isModule, { ...stored, rootSequence });
   }
   return describeFailingStep(step, null, owner?.name ?? "", owner?.isModule ?? false, {
@@ -296,7 +323,7 @@ export function targetNotes(step: FailingStep): string[] {
   }
   if (step.mapping === "unmapped") {
     notes.push(
-      "⚠️ This step could not be located in its test's definition, so authoredTargets and sequenceInOwner are unknown. Usually the owner's steps carry duplicate `sequence` values (saved by a client that omitted it); re-saving them with gi_update_test repairs the mapping. Otherwise the result no longer lines up with the current definition — re-run the test and ask again.",
+      "⚠️ This step could not be located in its test's definition, so authoredTargets and sequenceInOwner are unknown. Usually the run recorded duplicate `sequence` values for the owner's steps (saved by a client that omitted them); re-saving the owner with gi_update_test repairs the mapping for every run after the save. Otherwise the result no longer lines up with the current definition — re-run the test and ask again.",
     );
   }
   if (step.ownedBy?.isModule) {
@@ -323,8 +350,25 @@ export interface DiagnoseOptions {
  * @throws {ConfigError} when the API key is not configured.
  */
 export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis> {
+  const seen: { vars?: ReadonlyMap<string, VariableValue> } = {};
+  const diagnosis = await diagnoseStored(options, seen);
+  return seen.vars ? maskPrivate(diagnosis, seen.vars) : diagnosis;
+}
+
+/**
+ * diagnoseTest's body; records the suite's variables so every path can be masked.
+ *
+ * @param options The test, and how far back to look.
+ * @param seen Receives the variables once they are loaded.
+ * @return The unmasked diagnosis.
+ */
+async function diagnoseStored(
+  options: DiagnoseOptions,
+  seen: { vars?: ReadonlyMap<string, VariableValue> },
+): Promise<Diagnosis> {
   const runsBack = Math.max(0, options.runsBack ?? 0);
   const test = await request<TestRecord>("GET", `tests/${options.testId}`);
+  seen.vars = await variablesFor(test);
   const suiteRecord = test["suite"];
   const identity = {
     id: String(test._id ?? options.testId),
@@ -411,7 +455,7 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
   const stepsOf = (record: TestRecord): Steps => (Array.isArray(record.steps) ? record.steps : []);
   const { ids, truncated } = await collectChainIds(identity.id, async (id) => stepsOf(await loadRecord(id)));
   const chain = await pool(ids, REQUEST_CONCURRENCY, loadRecord);
-  const staleness = assessStaleness(test, chain, truncated);
+  const staleness = assessStaleness(asOfRun(test, result), chain, truncated);
 
   if (run.passing === null) {
     return {

@@ -1,5 +1,6 @@
 /** Client-side {{variable}} substitution: on-demand runs ignore custom variables and turn a missing one into "". */
 
+import { request, type SuiteRecord, type TestRecord } from "./client.js";
 import { type ExpandedStep } from "./validate.js";
 
 const REFERENCE = /\{\{\s*([^{}\s]+)\s*\}\}/g;
@@ -120,4 +121,30 @@ export function resolveDefinition(
     runtime: [...runtime],
     unresolved,
   };
+}
+
+/**
+ * The variables a stored test runs with: its suite's, then its organization's underneath.
+ *
+ * @param test The test record, whose `suite` arrives expanded.
+ * @return The merged variables; empty when the test has no suite.
+ * @throws {GhostInspectorError} when the suite cannot be read.
+ */
+export async function variablesFor(test: TestRecord): Promise<Map<string, VariableValue>> {
+  const ref = test["suite"];
+  const suiteId = ref && typeof ref === "object" ? String((ref as { _id?: unknown })._id ?? "") : String(ref ?? "");
+  if (!suiteId) return collectVariables({});
+  const suite = await request<SuiteRecord & Record<string, unknown>>("GET", `suites/${suiteId}`);
+  const orgRef = suite["organization"];
+  const orgId = orgRef && typeof orgRef === "object" ? String((orgRef as { _id?: unknown })._id ?? "") : String(orgRef ?? "");
+  let org: Record<string, unknown> | null = null;
+  if (orgId) {
+    try {
+      org = await request<Record<string, unknown>>("GET", `organizations/${orgId}`);
+    } catch {
+      org = null;
+    }
+  }
+  const list = (value: unknown): StoredVariable[] | undefined => (Array.isArray(value) ? (value as StoredVariable[]) : undefined);
+  return collectVariables({ org: list(org?.["variables"]), suite: list(suite["variables"]) });
 }

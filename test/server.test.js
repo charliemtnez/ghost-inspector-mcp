@@ -328,3 +328,16 @@ test("gi_plan_test says a run would be refused over an unresolved variable", asy
   assert.match(plan.wouldRefuse, /\{\{nope\}\}/);
   assert.deepEqual(plan.variables.unresolved.map((u) => u.name), ["nope"]);
 });
+
+test("a stored step with a fallback array and a private flag passes the step schema", async () => {
+  // gi_get_test returns targets as arrays and every step with `private`; a
+  // schema that refuses them breaks get → validate → update on real tests.
+  const { text, isError } = await callTool("gi_plan_test", {
+    definition: {
+      startUrl: "https://example.com/",
+      steps: [{ command: "assign", target: [{ selector: "#pin" }, { selector: "[name=pin]" }], value: "1234", private: true }],
+    },
+  });
+  assert.ok(!isError, text);
+  assert.equal(JSON.parse(text).plan[0].target, JSON.stringify([{ selector: "#pin" }, { selector: "[name=pin]" }]));
+});

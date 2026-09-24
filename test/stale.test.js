@@ -139,3 +139,12 @@ test("a scoped stale report evaluates only the scope", () => {
   assert.equal(scoped.scanned.unreadable, 0, "a test outside the scope is not unreadable, only unread");
   assert.ok(report.totals.evaluated > 1);
 });
+
+test("an unreadable module in a scoped scan is counted and flagged", () => {
+  // A module whose definition could not be read drops its edges, so an edit
+  // inside it is invisible and a stale failure reads as genuine.
+  const target = tests.find((t) => !t.importOnly && t.passing === false);
+  const scoped = buildStaleReport(tests, steps, NOW, new Set([target._id]), 2);
+  assert.equal(scoped.scanned.unreadable, 2);
+  assert.ok(scoped.notes.some((n) => /could not be read/.test(n)));
+});

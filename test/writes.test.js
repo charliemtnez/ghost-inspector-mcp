@@ -282,6 +282,11 @@ test("a string condition is written in the shape Ghost Inspector stores", () => 
   assert.equal(body.steps[1].condition, undefined, "no condition invented");
 });
 
+test("a private flag that did not land is a difference", () => {
+  const sent = sentOf([{ command: "assign", target: "#pin", value: "1", private: true }]);
+  assert.deepEqual(diffSteps(sent, [stored("assign", "#pin", "1")]).map((d) => d.field), ["steps[0].private"]);
+});
+
 // --- the backup on disk -----------------------------------------------------
 
 /**

@@ -65,11 +65,18 @@ So: register everything, refuse in the handler, and make the refusal an instruct
 | Order | Guard | Why |
 |---|---|---|
 | 1 | Walk the full `execute` chain and compare each `dateUpdated` against the last run | A red test whose module was edited *after* its last run is **stale, not broken**. Overwriting it silently destroys a colleague's fix. One level deep is not enough — modules nest. |
-| 2 | Fetch and return the complete prior definition | There is no version history. The returned backup **is** the rollback. |
+| 2 | Fetch the complete prior definition and save it, credentials removed, to an owner-only file | There is no version history. The backup file **is** the rollback; it comes back inline with `verbose` or when the file cannot be written. |
 | 3 | Apply the change | — |
 | 4 | Re-`GET` and diff against what was sent | `HTTP 200` alone does not prove the write landed as intended. |
 
 **Validate before persisting.** `POST /organizations/{orgId}/on-demand/execute` runs a test definition and discards it. Strip the submit `click` and end with an assertion on the submit button: this validates the entire selector chain **without saving anything and without submitting a real form**. Many Ghost Inspector tests submit live forms against production — treat `execute` as an action with real-world side effects.
+
+The submit guard is three layers, and none has an override that goes further — `stopBefore` can only cut earlier:
+- **(A) Static:** cut at the first click on a submit-shaped target, Enter keypress, or `eval`/`assertEval`/`extractEval` script or step condition that could submit or send data.
+- **(B) Probe:** before every remaining click, an injected `extractEval` inspects the element the target resolves to and stops the run on a form's submit control, a non-field control inside a form, or an unresolvable target. Every step carries a stop condition, persisted in `sessionStorage` so it survives a same-origin navigation.
+- **(C) Tripwire:** the stop condition also arms, once per page, blocks on submit events, `form.submit()`, non-GET fetch/XHR and `sendBeacon`, and logs them without stopping the run. It lives in the condition because the probe only exists where there is a click: a plan with none would otherwise run unarmed.
+- Documented residual gaps: a script that saved `window.fetch` or `form.submit` before the page's first step, a WebSocket, anything inside a child frame (same-origin iframes are not hooked), and data sent by a GET. An optional click whose selectors all parse and match nothing is let through, since the step would be skipped. Accepted false positive: a `type=submit` "Continue" inside a form stops the run.
+- 🔴 Blocking is total, the page's own analytics and validation calls included. A step that depends on one of those calls can fail in a validation and pass in a real run.
 
 ## GI API contract the implementation must respect
 
@@ -85,7 +92,7 @@ Verified empirically. The official docs omit all of these.
 - `GET /results/{id}/` ✅ exists — this is what `pollResult` uses.
 - `GET /test-results/{id}/` 🔴 **does not exist** (404, HTML). Treat any note or doc that names a `test-results` resource as wrong.
 - `GET /suite-results/{id}/` ✅ exists.
-- `GET /tests/{id}/results/` ✅ **exists** — verified live 2026-08-06 against a control (`/tests/{id}/bogus/` → 404 HTML). Returns a list, newest first, **10 by default**; `count` is respected.
+- `GET /tests/{id}/results/` ✅ **exists** — verified live 2026-08-06 against a control (`/tests/{id}/bogus/` → 404 HTML). Returns a list, newest first, **10 by default**; `count` is respected **up to 50**, and `offset` pages further back in disjoint pages. One test retained 561 runs going back about six months, so "GI keeps 50 runs" was only ever the page cap.
 - 🔴 **Nothing on the test record points at a result, in any of its three shapes.** Checked field-by-field: the flat listing (31 fields), the suite-scoped listing (33), and `GET /tests/{id}/` (35). None carries a `lastResult` or any other result reference — the record has `passing` and the execution dates and nothing else. Treat any note claiming a `lastResult` field, expanded or not, as wrong. This route is the only way from a test to its history, and a feature that needs "why is this red" has no fallback if it is unavailable.
 - Paginate with `count` and `offset` to walk backwards through runs. How far back that reaches is bounded by purging, so a regression can only be dated within the retained window — say "cannot see past X" rather than returning nothing.
 - 🔴 **A result step's `target` collapses the authored fallback array to the single selector that was used** — and its *type is not stable*. Measured over 26 fallback-array steps paired via `extra.source`: **21 collapsed to a string, 5 stayed an array.** Of the 21, 18 were one of the authored candidates verbatim and **3 were a candidate stripped of its `xpath=` prefix**, so they match nothing in the definition by string comparison.
@@ -95,19 +102,32 @@ Verified empirically. The official docs omit all of these.
 
 **Mapping a failed step back to the test that owns it**
 - Result steps are **expanded**: measured live, a 6-step definition produced a 15-step result. So a step's index in the result means nothing against the definition, and "fix step 9" is a wrong instruction on any test that imports a module.
-- Each result step carries `extra.source = {test, sequence}` — **the test that contributed the step and its position inside that test** — plus `extra.rootSequence`, the position in the root test. Verified: all 15 steps carried a distinct `source`, and `rootSequence` spanned 0–5, matching the 6 definition steps. **This is the reverse map that makes an automated repair proposal possible**; without it the module that owns a failing step can only be guessed.
-- 🔴 **A result step's `_id` is not a stable anchor into the definition.** Observed live: 16 of 17 result step ids matched the definition and the failing one did not, on a test whose `dateUpdated` *predates* the run by 35 seconds — so "the step was edited after the run" does not explain it and the cause is unknown. Anchor by `extra.source.test` + `extra.source.sequence`, never by step `_id`.
+- Each result step carries `extra.source = {test, sequence}` — the test that contributed the step — plus `extra.rootSequence`. 🔴 **Both sequences are copied from the stored `sequence` field**, not computed. A test saved by a client that omitted `sequence` stores 0 on every step and then reports 0 for every result step — 55 of 457 tests on a real account, every one edited through the API. So `extra.source.test` names the owner reliably, but its `sequence` only locates the step when the result recorded a distinct sequence for every step of that owner — judge that from the result, never from the owner's current record, which may have been re-saved since. Results from on-demand execution carry `extra: null`.
+- ✅ **Position locates the step.** A result lists the expanded steps in run order: step counts matched a local expansion 15/15 and 21/21, `execute` steps do not appear, and a step whose condition was false appears with `passing: null`. Expand the current definition locally with each step's owner and align by position — valid only when the chain is not stale, not truncated, and the lengths and commands agree step for step. Otherwise fall back to the stored sequence only when it is usable, and otherwise say the step is unmapped. The write path always stores `sequence` as the index, so tests it touches map either way.
+- 🔴 **A result step's `_id` is not an anchor.** In a clean run, 0 of 15 result step ids matched the definition. Never map by it.
 
 **Asynchrony** — 🔴 **the two execution endpoints do NOT behave the same way.** An earlier version of this file said they did; it was wrong, and the mistake aborts healthy runs.
 - `POST /organizations/{orgId}/on-demand/execute` is **async**: `HTTP 200` in ~0.2s with a **pending** record (`passing: null`, `executionTime: null`). Poll `GET /results/{id}/`.
 - 🔴 `POST /tests/{id}/execute/` **BLOCKS until the run finishes** and returns the completed result — `passing` already a boolean, `executionTime` already filled. Measured twice: **50s of wall time for runs of 29s and 32s**, the difference being queue wait. There is nothing to poll, and nothing comes back early.
 - **Consequence for any caller: the wait must be spent on the request itself.** The client's default 60s timeout sits barely above the observed wall time, so a slightly slower run or a busier queue aborts a request for a run that is proceeding normally — and because the response never arrived, **no result id exists to look it up with**. `gi_run_test` passes an explicit 240s and, on expiry, reports the run as *started and still going* rather than as an error, pointing at `gi_test_result` to collect the outcome.
 - 🔴 `passing: null` means *not finished*, not *failed*. Conflating them invents failures that do not exist.
+- A polled result can show `passing` set while `executionTime` and `dateExecutionFinished` are still empty; a moment later both are filled. Re-read before reporting a duration, and fall back to `dateExecutionFinished − dateExecutionStarted`.
 
 **JavaScript steps**
 - 🔴 `eval` and `assertEval` require an **explicit `return`**. Without it the expression evaluates to `undefined` → falsy → the assertion always fails, and it looks like a product bug.
 - `eval` runs in the page's JS context; globals persist across steps.
-- `assign` **does** dispatch `input` and `change`, so it reaches reactive stores and exercises input masks and validation. Do not "work around" it.
+- 🔴 **A plain `eval`'s return value is recorded nowhere** in the result. Only `extractEval` with a `variableName` exposes one, in `result.extractions`.
+- `assign` dispatches `input`, so it reaches reactive stores and exercises input masks. 🔴 Measured live on a plain text input, it did **not** dispatch `change`; do not assume a `change` handler has run. (An earlier version of this file said it dispatched both.)
+
+**Conditions**
+- 🔴 **A step's `condition` is stored as `{statement: "..."}`**, never a bare string — 92 of 92 on a real account. On-demand execution refuses a string outright ("condition should be object,null"). Read either shape, send and write `{statement}`, and compare the statement text: code that reads it as a string silently drops every real condition.
+- Conditions are evaluated in the page's own JS context before the step: they see and can set `window`, and share `sessionStorage` with the page.
+
+**Variables**
+- Custom variables live in `suite.variables: [{name, value, private}]` (on `GET /suites/{id}/` and in the listing) and in `organization.variables`. Folders carry none, and no test on a real account carried its own.
+- 🔴 **On-demand execution ignores custom variables**, whether passed in the query or in the body, and replaces an unresolved `{{name}}` with an empty string without complaint: `https://{{sub}}.example.com/` ran as `https://.example.com/` and **passed**. Substitute them client-side and refuse the run when one is left without a value.
+- A step with `variableName` (`extract`, `extractEval`, `store`) defines `{{name}}` for every later step, modules imported afterwards included. Built-ins such as `{{timestamp}}` and `{{alphanumeric}}`, and dotted names (faker, `result.*`, `lastStep.*`), are Ghost Inspector's to fill.
+- On-demand honours `userAgent` and `viewportSize` **in the body** and ignores `userAgent` in the query. A stored run records the suite's user agent in `result.userAgent` and the resolved variables in `result.variables`.
 
 **Text assertions**
 - 🔴 **`assertTextPresent` requires a `target`.** With an empty target it fails as `Text not contained` even when the text is plainly on the page — so the error blames the page rather than the step. Verified live: no target fails, `body` and a specific element both pass. Scope to `body` at minimum.
@@ -125,12 +145,16 @@ Verified empirically. The official docs omit all of these.
 - A test's `suite` arrives **expanded** as `{_id, name}`; a suite's `folder` is a **bare id**. So test→suite is free, and only suite→folder needs the suite list.
 - `suite.testCount` agrees with the actual test count. `suite.details` was empty on every suite — do not rely on it.
 - Fetching ~440 KB to return ~10 KB is the expected shape of an aggregation here. Fetch wide, summarise, never forward the API's answer.
+- 🔴 **The rate limit is real.** Two or three full-account scans back to back left 93 and 113 of 457 definitions unreadable; one scan on a rested API read all of them. Count unreadable definitions and say so — never treat one as empty.
 
 **Data model**
 - `GET /tests/` does **not** include `steps`. Per-test `GET` is required for step data — so a module→importers reverse index costs one request per test.
 - `target` may be an **array of fallback selectors**: `[{"selector": "..."}, ...]`, tried in order.
 - `execute` steps nest modules, recursively. Results contain the **expanded** steps, so result step counts will not match definition step counts.
 - A date of `1970-01-01` is the "never executed" sentinel, not corrupt data.
+- 🔴 **Test and suite records carry `httpAuthUsername` and `httpAuthPassword` in plain text** (50 of 457 tests on a real account). Anything that forwards a raw record — a backup, a diff — puts the password in a transcript. Strip credential-shaped keys from every response.
+- A duplicate keeps its source's `dateCreated` to the millisecond, so `dateCreated` cannot date a copy.
+- A result carries its evidence: `screenshot.original/small.defaultUrl`, `video.url`, `console[] {url, output, error: boolean, dateExecuted}` (not `level`/`message`), `extractions`, `urls[]`, `endUrl`, and `screenshotCompareEnabled/Passing/Difference/Threshold/BaselineResult`.
 - Old results are purged. An old failure may be undiagnosable from the API.
 - **`dateUpdated` is not bumped by executing a test.** The whole stale-versus-broken comparison rests on this: if a run touched `dateUpdated`, every test would read as edited-after-its-run and the triage would return noise. Confirmed on a real account, where 14 failures sit at `dateUpdated` ≤ last run.
 - `dateUpdated` means *the record changed*, not *someone fixed it* — a rename or a suite move bumps it too. So the honest claim is "this result is out of date", never "this has been fixed".
@@ -151,7 +175,8 @@ Verified empirically. The official docs omit all of these.
 - 🔴 **A direct importer count understates risk.** Real chains observed: a module with 31 direct importers reaches 55 transitively, and one with a *single* direct importer reaches 22. Always report the transitive closure; anyone reading "1 importer" would treat that module as safe to edit.
 
 **Writes**
-- `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**.
+- `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**. It also accepts `startUrl`, verified live 2026-09-24 on a disposable clone. The vendor's own reference documents only `name`.
+- ✅ **`POST /tests/{id}/accept-screenshot/`** makes the latest result's screenshot the baseline. Verified live on a clone: the test then reads `screenshotComparePassing: true`, and **`dateUpdated` does not move**. When the latest comparison passed — a first run, say — it answers `VALIDATION_ERROR` "Unable to accept screenshot", so refuse that case before sending. The vendor documents GET as well as POST, which makes a GET a mutation; use POST only. There is no route to restore an earlier baseline.
 - `POST /suites/{id}/` accepts `folder` (undocumented) and moves the suite with its tests. Reversible.
 - `POST /folders/` creates. **`DELETE /folders/{id}/` does not exist** (404, HTML body) — an empty folder can only be removed from the UI, so folder names must be right the first time.
 - ✅ **`POST /suites/` creates a suite.** Verified live 2026-08-06, first by probing with an incomplete body (with a valid `organization` and no name it answers *"Could not create suite: Suite should have required property 'name'"* — a schema validator refusing a create, not a missing route), then by creating one. `{organization, name}` is the minimum, and **`folder` is honoured at create time**, so no follow-up move is needed. It will happily create a second suite with an existing name; nothing distinguishes them afterwards.
@@ -222,8 +247,9 @@ npm run build && node dist/index.js
 |---|---|---|
 | `GHOST_INSPECTOR_API_KEY` | yes | Per-user key from Account Settings → API Access |
 | `GHOST_INSPECTOR_ORG_ID` | for on-demand execution | Consumer's organization id — config, never hardcoded |
-| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Registers the mutating tools when `true` |
-| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Registers `gi_run_test` when `true`. Deliberately **not** implied by `ALLOW_WRITES` |
+| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Lets the five write tools act when `true`; they are listed either way |
+| `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Lets `gi_run_test` execute when `true`. Deliberately **not** implied by `ALLOW_WRITES` |
+| `GHOST_INSPECTOR_BACKUP_DIR` | no (default `~/.ghost-inspector-mcp/backups`) | Where the write path saves prior definitions. Read on every call |
 
 **Environment variables only — do not add `dotenv` or an `.env` file.** This ships as a global command with no project directory of its own, so a `.env` beside the source would not be read in the installed case anyway. More to the point, a second sanctioned place to keep the key is a second place to leak it, which is the opposite of this project's purpose. The documented path is `~/.gi-key` at `600` plus an export in the shell profile. An `.env.example` existed briefly and was removed for promising a mechanism nothing implemented; `.env*` stays in `.gitignore` so a file created out of habit can never be committed.
 

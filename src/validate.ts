@@ -55,8 +55,8 @@ const SUBMIT_SCRIPT =
 /** Commands whose `value` is a script the page runs. */
 const SCRIPT_COMMANDS = new Set(["eval", "assertEval", "extractEval"]);
 
-/** In run mode, a click target that names a control: after a field is filled, it may send the form. */
-const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button/i;
+/** In run mode, a click target that names a control, or that a variable fills: after a field is filled, it may send the form. */
+const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button|\{\{/i;
 
 /** Key values that submit a focused form. */
 const SUBMIT_KEY = /^(enter|return|\\n|\\r|13)$/i;
@@ -71,6 +71,8 @@ export interface ExpandedStep {
   variableName: string;
   condition: string | null;
   optional: boolean;
+  /** Ghost Inspector hides a private step's value in results. */
+  private: boolean;
   /** Name of the module this step was inlined from, when it was. */
   fromModule: string | null;
   /** The test whose own step list holds this step: the root, or a module. */
@@ -180,6 +182,7 @@ async function expand(
         variableName: str(step["variableName"]),
         condition: andConditions(inherited, own),
         optional: step["optional"] === true,
+        private: step["private"] === true,
         fromModule: depth > 0 ? owner.name : null,
         ownerId: owner.id,
         ownerName: owner.name,
@@ -353,10 +356,11 @@ export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map:
           command: "extractEval",
           target: "",
           authoredTarget: "",
-          value: probeScript(selectorsOf(step.authoredTarget), planIndex),
+          value: probeScript(selectorsOf(step.authoredTarget), planIndex, step.optional),
           variableName: `giGuardProbe${planIndex}`,
           condition,
           optional: false,
+          private: false,
         },
         planIndex,
         "probe",
@@ -374,6 +378,7 @@ export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map:
       variableName: "giGuardLog",
       condition: null,
       optional: true,
+      private: false,
       fromModule: null,
       ownerId: last?.ownerId ?? "",
       ownerName: last?.ownerName ?? "",
@@ -751,7 +756,8 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
       ? null
       : `Refused before anything was sent: ${unresolved.map((u) => `{{${u.name}}} in ${u.where}`).join("; ")} has no value. ` +
         "On-demand execution ignores custom variables and would run each as an empty string, which can still come back green. " +
-        `The suite defines: ${names(inputs.suite)}. The organization defines: ${names(inputs.org)}. ` +
+        `The suite defines: ${inputs.suite ? names(inputs.suite) : "nothing (no suite was given)"}. ` +
+        `${inputs.org ? `The organization defines: ${names(inputs.org)}.` : "The organization was not read."} ` +
         "Pass the missing ones as `variables` ({\"name\": \"value\"}), or give an ad-hoc definition a `suiteId`.";
 
   const params: Record<string, string> = {};
@@ -772,11 +778,25 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
             ...(step.variableName ? { variableName: step.variableName } : {}),
             ...(step.condition ? { condition: { statement: step.condition } } : {}),
             ...(step.optional ? { optional: true } : {}),
+            ...(step.private ? { private: true } : {}),
           })),
           ...settings.values,
         };
 
   return { resolution, vars, toRun, sent, map, guard, settings, body, params, unresolved, refusal, notes };
+}
+
+/**
+ * A validation's evidence, without the extractions the injected guard wrote for itself.
+ *
+ * @param result The finished on-demand result.
+ * @param verbose Return every console entry.
+ * @return The evidence; the guard's findings are reported under `guard` instead.
+ */
+export function validationEvidence(result: Record<string, unknown>, verbose: boolean): Evidence {
+  const evidence = evidenceOf(result, verbose);
+  const extractions = Object.fromEntries(Object.entries(evidence.extractions).filter(([key]) => !key.startsWith("giGuard")));
+  return { ...evidence, extractions };
 }
 
 /**
@@ -787,10 +807,13 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
  * @return The same shape, private values masked.
  */
 export function maskPrivate<T>(value: T, vars: ReadonlyMap<string, VariableValue>): T {
-  const hidden = [...vars.values()]
-    .filter((entry) => entry.private && entry.value !== "")
-    .map((entry) => entry.value)
-    .sort((a, b) => b.length - a.length);
+  const hidden = [
+    ...new Set(
+      [...vars.values()]
+        .filter((entry) => entry.private && entry.value !== "")
+        .flatMap((entry) => encodedForms(entry.value)),
+    ),
+  ].sort((a, b) => b.length - a.length);
   if (hidden.length === 0) return value;
   const mask = (item: unknown): unknown => {
     if (typeof item === "string") return hidden.reduce((text, secret) => text.split(secret).join("(private)"), item);
@@ -801,6 +824,17 @@ export function maskPrivate<T>(value: T, vars: ReadonlyMap<string, VariableValue
     return item;
   };
   return mask(value) as T;
+}
+
+/**
+ * The ways a value can appear once it has passed through a URL or a JSON document.
+ *
+ * @param value A secret.
+ * @return The raw value, its URL-encoded forms and its JSON-escaped form.
+ */
+function encodedForms(value: string): string[] {
+  const component = encodeURIComponent(value);
+  return [value, component, component.replace(/%20/g, "+"), encodeURI(value), JSON.stringify(value).slice(1, -1)];
 }
 
 /**
@@ -920,7 +954,7 @@ export async function planTest(options: Omit<ValidateOptions, "dryRun" | "verbos
     guard,
     plan,
     wouldRefuse: refusal === null ? null : maskPrivate(refusal, vars),
-    notes: notes.filter((note) => !note.startsWith("DRY RUN") && note !== refusal),
+    notes: notes.filter((note) => !note.startsWith("DRY RUN") && !note.startsWith("`plan` is exactly") && note !== refusal),
   };
 }
 
@@ -1073,7 +1107,7 @@ async function runValidation(
       );
     }
     notes.push(
-      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch before the page's first step ran, or data sent by a GET (a pixel or a navigation).",
+      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch or form.submit before the page's first step ran, a WebSocket, anything inside a child frame, or data sent by a GET (a pixel or a navigation).",
     );
     if (expansion.modules.length > 0) {
       notes.push(
@@ -1198,7 +1232,7 @@ async function runValidation(
     settingsCheck: drift,
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,
     steps: stepOutcomes,
-    evidence: evidenceOf(result, options.verbose === true),
+    evidence: validationEvidence(result, options.verbose === true),
     notes,
   };
   if (options.verbose !== true) {
