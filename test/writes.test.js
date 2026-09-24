@@ -270,6 +270,18 @@ test("a startUrl that did not land is reported", () => {
   assert.equal(landed.verification.fieldDiffs.length, 0);
 });
 
+test("a condition changed inside its statement object is a difference", () => {
+  const sent = sentOf([{ command: "click", target: "#a", condition: { statement: "return 1;" } }]);
+  assert.deepEqual(diffSteps(sent, [stored("click", "#a", "", { condition: { statement: "return 2;" } })]).map((d) => d.field), ["steps[0].condition"]);
+  assert.equal(diffSteps(sent, [stored("click", "#a", "", { condition: { statement: "return 1;" } })]).length, 0);
+});
+
+test("a string condition is written in the shape Ghost Inspector stores", () => {
+  const body = buildUpdateBody({ steps: [{ command: "click", condition: "return 1;" }, { command: "click" }] });
+  assert.deepEqual(body.steps[0].condition, { statement: "return 1;" });
+  assert.equal(body.steps[1].condition, undefined, "no condition invented");
+});
+
 // --- the backup on disk -----------------------------------------------------
 
 /**

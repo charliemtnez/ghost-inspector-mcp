@@ -307,9 +307,12 @@ const STEP_SCHEMA = z.object({
     ),
   variableName: z.string().optional(),
   condition: z
-    .string()
+    .union([z.string(), z.object({ statement: z.string() })])
+    .nullable()
     .optional()
-    .describe("JavaScript deciding whether the step runs. AND-ed with conditions inherited from enclosing imports."),
+    .describe(
+      "JavaScript deciding whether the step runs, with an explicit return. Stored as {statement}, which gi_get_test returns; a bare string is written in that shape. AND-ed with conditions inherited from enclosing imports.",
+    ),
   optional: z.boolean().optional().describe("Continue when this step fails."),
 });
 
