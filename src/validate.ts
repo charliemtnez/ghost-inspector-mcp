@@ -348,6 +348,8 @@ export interface ValidationReport {
   /** False for a dry run or a refusal: nothing was sent to Ghost Inspector. */
   executed: boolean;
   outcome: {
+    /** The on-demand result, readable with GET /results/{id}/. */
+    resultId: string;
     passing: boolean | null;
     executionTimeMs: number | null;
     endUrl: string | null;
@@ -841,6 +843,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     ...shared,
     executed: true,
     outcome: {
+      resultId: String(result._id ?? pending._id ?? ""),
       passing: result.passing,
       executionTimeMs: executionTimeMs(result),
       endUrl: result.endUrl ?? null,
