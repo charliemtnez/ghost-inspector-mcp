@@ -28,6 +28,7 @@ import {
   type TestRecord,
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { expandSteps, type ExpandedStep } from "./validate.js";
 import { assessStaleness, type StalenessVerdict } from "./writes.js";
 
 /** What the run's own record says, independent of any step. */
@@ -59,6 +60,23 @@ export interface FailingStep {
   url: string | null;
   /** The test that contributed this step — the one to edit. */
   ownedBy: { testId: string; name: string; isModule: boolean; sequenceInOwner: number | null } | null;
+  /** How the step was matched to the definition. `unmapped` means sequenceInOwner and authoredTargets are unknown. */
+  mapping: "position" | "stored sequence" | "unmapped";
+}
+
+/** Where a result step sits in the definition, however that was worked out. */
+export interface StepLocation {
+  ownerId: string;
+  sequenceInOwner: number | null;
+  rootSequence: number | null;
+  mapping: FailingStep["mapping"];
+}
+
+/** A test that contributes steps to a run, as the mapping needs it. */
+export interface Owner {
+  name: string;
+  steps: Steps;
+  isModule: boolean;
 }
 
 export interface Diagnosis {
@@ -142,18 +160,15 @@ export function describeFailingStep(
   ownerSteps: Steps | null,
   ownerName: string,
   ownerIsModule: boolean,
+  location: StepLocation = storedLocation(step),
 ): FailingStep {
-  const extra = (step["extra"] ?? {}) as Record<string, unknown>;
-  const source = (extra["source"] ?? {}) as Record<string, unknown>;
-  const ownerId = source["test"] === undefined ? "" : String(source["test"]);
-  const seqInOwner = typeof source["sequence"] === "number" ? (source["sequence"] as number) : null;
-
+  const { ownerId, sequenceInOwner: seqInOwner } = location;
   const authored =
     ownerSteps && seqInOwner !== null ? authoredSelectors(ownerSteps[seqInOwner]?.["target"]) : [];
   const resolved = typeof step["target"] === "string" ? (step["target"] as string) : null;
 
   return {
-    rootSequence: typeof extra["rootSequence"] === "number" ? (extra["rootSequence"] as number) : null,
+    rootSequence: location.rootSequence,
     command: String(step["command"] ?? ""),
     error: String(step["error"] ?? ""),
     resolvedTarget: resolved,
@@ -166,7 +181,100 @@ export function describeFailingStep(
     ownedBy: ownerId
       ? { testId: ownerId, name: ownerName, isModule: ownerIsModule, sequenceInOwner: seqInOwner }
       : null,
+    mapping: location.mapping,
   };
+}
+
+/**
+ * The location a result step claims for itself through `extra.source` and `extra.rootSequence`.
+ *
+ * @param step A result step.
+ * @return Its owner and stored positions, taken at face value.
+ */
+function storedLocation(step: Record<string, unknown>): StepLocation {
+  const extra = (step["extra"] ?? {}) as Record<string, unknown>;
+  const source = (extra["source"] ?? {}) as Record<string, unknown>;
+  return {
+    ownerId: source["test"] === undefined ? "" : String(source["test"]),
+    sequenceInOwner: typeof source["sequence"] === "number" ? source["sequence"] : null,
+    rootSequence: typeof extra["rootSequence"] === "number" ? extra["rootSequence"] : null,
+    mapping: "stored sequence",
+  };
+}
+
+/**
+ * Pairs each result step with the expanded definition step at the same position.
+ *
+ * @param resultSteps Steps of a result, in run order.
+ * @param expanded The current definition, expanded locally.
+ * @param flags Whether the chain is stale or its expansion truncated.
+ * @return The expanded steps, parallel to the result, or null when position cannot be trusted.
+ */
+export function alignByPosition(
+  resultSteps: Array<Record<string, unknown>>,
+  expanded: ExpandedStep[],
+  flags: { stale: boolean; truncated: boolean },
+): ExpandedStep[] | null {
+  if (flags.stale || flags.truncated || resultSteps.length !== expanded.length) return null;
+  const sameCommands = resultSteps.every((step, i) => String(step["command"] ?? "") === expanded[i]?.command);
+  return sameCommands ? expanded : null;
+}
+
+/**
+ * Whether stored `sequence` values can locate a step: exactly 0..n-1, in order.
+ *
+ * @param steps One test's own steps.
+ * @return False when any value repeats, is missing or is out of place.
+ */
+export function sequencesUsable(steps: Steps): boolean {
+  return steps.every((step, i) => step["sequence"] === i);
+}
+
+/**
+ * Finds the failing step of a result and maps it to the definition step that produced it.
+ *
+ * @param resultSteps Steps of the result.
+ * @param expanded The current definition, expanded locally with owners.
+ * @param owners Every test in the chain, by id.
+ * @param flags Whether the chain is stale or its expansion truncated.
+ * @param rootId The test the result belongs to.
+ * @return The failing step with its mapping, or null when no step failed.
+ */
+export function locateFailingStep(
+  resultSteps: Array<Record<string, unknown>>,
+  expanded: ExpandedStep[],
+  owners: ReadonlyMap<string, Owner>,
+  flags: { stale: boolean; truncated: boolean },
+  rootId = "",
+): FailingStep | null {
+  const index = resultSteps.findIndex((step) => step["passing"] === false);
+  const step = resultSteps[index];
+  if (!step) return null;
+
+  const entry = alignByPosition(resultSteps, expanded, flags)?.[index];
+  if (entry) {
+    const owner = owners.get(entry.ownerId);
+    return describeFailingStep(step, owner?.steps ?? null, owner?.name ?? entry.ownerName, owner?.isModule ?? false, {
+      ownerId: entry.ownerId,
+      sequenceInOwner: entry.indexInOwner,
+      rootSequence: entry.rootIndex,
+      mapping: "position",
+    });
+  }
+
+  const stored = storedLocation(step);
+  const owner = owners.get(stored.ownerId);
+  const root = owners.get(rootId);
+  if (owner && stored.sequenceInOwner !== null && sequencesUsable(owner.steps)) {
+    const rootSequence = root && sequencesUsable(root.steps) ? stored.rootSequence : null;
+    return describeFailingStep(step, owner.steps, owner.name, owner.isModule, { ...stored, rootSequence });
+  }
+  return describeFailingStep(step, null, owner?.name ?? "", owner?.isModule ?? false, {
+    ownerId: stored.ownerId,
+    sequenceInOwner: null,
+    rootSequence: null,
+    mapping: "unmapped",
+  });
 }
 
 /** Notes that must accompany a failing step so it is not read too literally. */
@@ -180,6 +288,11 @@ export function targetNotes(step: FailingStep): string[] {
   if (step.resolvedTarget && step.authoredTargets.length > 0 && !step.authoredTargets.includes(step.resolvedTarget)) {
     notes.push(
       "⚠️ The resolved target does not appear verbatim in the definition — Ghost Inspector normalises some selectors, dropping an `xpath=` prefix. Searching the definition for this string will not find the step. Match by sequence instead.",
+    );
+  }
+  if (step.mapping === "unmapped") {
+    notes.push(
+      "⚠️ This step could not be located in its test's definition, so authoredTargets and sequenceInOwner are unknown. Usually the owner's steps carry duplicate `sequence` values (saved by a client that omitted it); re-saving them with gi_update_test repairs the mapping. Otherwise the result no longer lines up with the current definition — re-run the test and ask again.",
     );
   }
   if (step.ownedBy?.isModule) {
@@ -283,12 +396,15 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
   // Staleness before the error, always: a stale result describes a definition
   // that no longer exists, and a reader who sees the error first has already
   // begun diagnosing from it.
-  const loadSteps = async (id: string): Promise<Steps> => {
-    const record = await request<TestRecord>("GET", `tests/${id}`);
-    return Array.isArray(record.steps) ? record.steps : [];
+  const records = new Map<string, Promise<TestRecord>>([[identity.id, Promise.resolve(test)]]);
+  const loadRecord = (id: string): Promise<TestRecord> => {
+    const hit = records.get(id) ?? request<TestRecord>("GET", `tests/${id}`);
+    records.set(id, hit);
+    return hit;
   };
-  const { ids, truncated } = await collectChainIds(options.testId, loadSteps);
-  const chain = await pool(ids, REQUEST_CONCURRENCY, (id) => request<TestRecord>("GET", `tests/${id}`));
+  const stepsOf = (record: TestRecord): Steps => (Array.isArray(record.steps) ? record.steps : []);
+  const { ids, truncated } = await collectChainIds(identity.id, async (id) => stepsOf(await loadRecord(id)));
+  const chain = await pool(ids, REQUEST_CONCURRENCY, loadRecord);
   const staleness = assessStaleness(test, chain, truncated);
 
   if (run.passing === null) {
@@ -330,23 +446,28 @@ export async function diagnoseTest(options: DiagnoseOptions): Promise<Diagnosis>
     return { test: identity, verdict, staleness, run, failingStep: null, horizon, notes };
   }
 
-  const source = ((failing["extra"] ?? {}) as Record<string, unknown>)["source"] as
-    | Record<string, unknown>
-    | undefined;
-  const ownerId = source?.["test"] === undefined ? "" : String(source["test"]);
-  let ownerSteps: Steps | null = null;
-  let ownerName = identity.name;
-  let ownerIsModule = false;
-  if (ownerId && ownerId === identity.id) {
-    ownerSteps = Array.isArray(test.steps) ? test.steps : [];
-  } else if (ownerId) {
-    const owner = await request<TestRecord>("GET", `tests/${ownerId}`);
-    ownerSteps = Array.isArray(owner.steps) ? owner.steps : [];
-    ownerName = String(owner.name ?? "");
-    ownerIsModule = isModule(owner);
+  const expansion = await expandSteps(
+    stepsOf(test),
+    async (id) => {
+      const record = await loadRecord(id);
+      return { name: String(record.name ?? id), steps: stepsOf(record) };
+    },
+    { id: identity.id, name: identity.name },
+  );
+  const sourceId = storedLocation(failing).ownerId;
+  if (sourceId) await loadRecord(sourceId);
+  const owners = new Map<string, Owner>();
+  for (const [id, pending] of records) {
+    const record = await pending;
+    owners.set(id, { name: String(record.name ?? ""), steps: stepsOf(record), isModule: isModule(record) });
   }
-
-  const failingStep = describeFailingStep(failing, ownerSteps, ownerName, ownerIsModule);
+  const failingStep = locateFailingStep(
+    steps,
+    expansion.steps,
+    owners,
+    { stale: staleness.verdict === "stale", truncated: truncated || expansion.truncated },
+    identity.id,
+  ) as FailingStep;
   notes.push(...targetNotes(failingStep));
   return { test: identity, verdict, staleness, run, failingStep, horizon, notes };
 }
