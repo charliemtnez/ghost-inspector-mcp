@@ -696,7 +696,9 @@ server.registerTool(
         "it — validate with gi_validate_test before trusting it.\n\n" +
         "If the copy is made but placing or renaming it fails, the response says " +
         "so and returns the id, because the copy is already real and needs " +
-        "cleaning up.",
+        "cleaning up.\n\n" +
+        "A copy keeps the source's `dateCreated` to the millisecond, so " +
+        "`dateCreated` cannot date a copy or tell it apart from its source.",
       inputSchema: {
         sourceTestId: z.string().describe("The test to copy. Required — there is no create."),
         name: z.string().optional().describe('New name. Defaults to "<source> (Copy)".'),
