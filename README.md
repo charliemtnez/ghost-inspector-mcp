@@ -223,7 +223,7 @@ Confirmation is asked for only where there is a consequence, which is the point 
 - **(B) In the browser.** Before every remaining click, a probe inspects the element it resolves to and stops the run if it is a form's submit control, a non-field control inside a form, or cannot be resolved at all. An aria-labelled submit button in a form, which no selector pattern can recognise, is caught here.
 - **(C) Tripwire.** Before every step, on every page, submit events, `form.submit()`, non-GET `fetch` and XHR, and `sendBeacon` are blocked and reported. It does not stop the run.
 
-What remains is documented rather than hidden: a script that saved `window.fetch` before the page's first step ran, and data sent by a GET (a pixel or a navigation). The guard errs towards stopping: a "Continue" button typed `submit` inside a form stops the run. There is no option to make it submit; that stays a deliberate `curl`. Use `gi_plan_test` first on anything touching production: it reports exactly what would run, inlined, resolved and guarded, without starting a browser.
+What remains is documented rather than hidden: a script that saved `window.fetch` or `form.submit` before the page's first step ran, a WebSocket, anything inside a child frame, and data sent by a GET (a pixel or a navigation). The guard errs towards stopping: a "Continue" button typed `submit` inside a form stops the run. There is no option to make it submit; that stays a deliberate `curl`. Use `gi_plan_test` first on anything touching production: it reports exactly what would run, inlined, resolved and guarded, without starting a browser.
 
 ## Development
 

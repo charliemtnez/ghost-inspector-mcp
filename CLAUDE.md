@@ -75,7 +75,7 @@ The submit guard is three layers, and none has an override that goes further —
 - **(A) Static:** cut at the first click on a submit-shaped target, Enter keypress, or `eval`/`assertEval`/`extractEval` script or step condition that could submit or send data.
 - **(B) Probe:** before every remaining click, an injected `extractEval` inspects the element the target resolves to and stops the run on a form's submit control, a non-field control inside a form, or an unresolvable target. Every step carries a stop condition, persisted in `sessionStorage` so it survives a same-origin navigation.
 - **(C) Tripwire:** the stop condition also arms, once per page, blocks on submit events, `form.submit()`, non-GET fetch/XHR and `sendBeacon`, and logs them without stopping the run. It lives in the condition because the probe only exists where there is a click: a plan with none would otherwise run unarmed.
-- Documented residual gaps: a script that saved `window.fetch` before the page's first step, and data sent by a GET. Accepted false positive: a `type=submit` "Continue" inside a form stops the run.
+- Documented residual gaps: a script that saved `window.fetch` or `form.submit` before the page's first step, a WebSocket, anything inside a child frame (same-origin iframes are not hooked), and data sent by a GET. An optional click whose selectors all parse and match nothing is let through, since the step would be skipped. Accepted false positive: a `type=submit` "Continue" inside a form stops the run.
 - 🔴 Blocking is total, the page's own analytics and validation calls included. A step that depends on one of those calls can fail in a validation and pass in a real run.
 
 ## GI API contract the implementation must respect

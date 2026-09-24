@@ -20,7 +20,8 @@ group failures and handle screenshots.
   `httpAuthUsername` / `httpAuthPassword` in plain text, and `gi_update_test`
   returned them inside `backup`. Credential-shaped keys are stripped from every
   tool result, at the source and again on the way out. Private variable values
-  are masked as `(private)` in validation reports.
+  are masked as `(private)`, raw, URL-encoded or JSON-escaped, in validation
+  reports and in stored-run reports from `gi_run_test` and `gi_test_result`.
 - 🔴 **A failure inside a module maps to the step that failed.**
   `extra.source.sequence` copies the stored `sequence` field, which a client
   that omits it leaves at 0 on every step, so every failure mapped to the
@@ -51,11 +52,20 @@ group failures and handle screenshots.
     submit control, on a non-field control inside a form, or on a target that
     cannot be resolved.
   - (C) A tripwire, armed before every step, blocks submit events,
-    `form.submit()`, non-GET fetch and XHR, and `sendBeacon`, and reports what
-    it blocked.
+    `form.submit()`, non-GET fetch and XHR (and any XHR opened before it
+    armed), and `sendBeacon`, and reports what it blocked.
 
-  `gi_run_test` also asks for `confirmSubmit` when a button or form control is
-  clicked after a field was filled.
+  `gi_run_test` resolves `{{variables}}` before its own submit check, and also
+  asks for `confirmSubmit` when a button, form control or variable-filled target
+  is clicked after a field was filled.
+- **Stored steps round-trip.** Fallback-array targets and each step's `private`
+  flag are accepted by every tool that takes steps. Guard 4 compares `private`,
+  and validations send it.
+- **An optional click on an absent element is skipped** by the in-browser
+  probe, not treated as a reason to stop the whole validation.
+- **An older run is judged against its own date.** `gi_test_result` with
+  `runsBack` compares the chain with that run, not the latest. A stored
+  sequence is trusted only when the run itself recorded distinct ones.
 - **`gi_run_test` reports where a submitting run went** instead of asserting that
   it submitted, and says when the run ended on the page it started on.
 - **Run reports tell the truth about what ran.** `stepsExecuted` counts only steps
@@ -66,8 +76,8 @@ group failures and handle screenshots.
 ### Added
 
 - **`gi_plan_test`** (read-only): exactly what a validation would send, with every
-  guard decision and variable, and whether it would be refused. No key, org or
-  browser is involved.
+  guard decision and variable, and whether it would be refused. It only reads
+  definitions: no browser starts and no organization id is needed.
 - **`gi_find_tests`** (read-only): tests by name, folder, suite or step, with ids.
 - **`gi_test_history`** (read-only): up to 500 runs, the last pass, and the first
   failure of the current red streak, with an honest horizon.
@@ -78,7 +88,9 @@ group failures and handle screenshots.
   finished result with a failing comparison, and the response returns the
   baseline it replaced. Accepting does not move `dateUpdated`.
 - `folder` / `suite` filters on `gi_stale_tests`, `gi_vacuous_tests` and
-  `gi_module_usage`. The module listing keeps its account-wide blast radius.
+  `gi_module_usage`. The module listing keeps its account-wide blast radius, and
+  a scoped scan counts unreadable definitions, nested modules included, with a
+  warning that a genuine failure may then be stale.
 - `testIds` (1–20) on `gi_get_test` and `gi_test_result`; `expandModules` on
   `gi_get_test`.
 - `startUrl` on `gi_update_test` and `gi_duplicate_test`.
@@ -87,7 +99,7 @@ group failures and handle screenshots.
   and `stopped by guard`.
 - Backups on disk: `GHOST_INSPECTOR_BACKUP_DIR` (default
   `~/.ghost-inspector-mcp/backups`, directory 700, file 600, no credentials), on
-  every write path, refusals included.
+  every `gi_update_test` path, refusals included.
 
 ### Changed
 

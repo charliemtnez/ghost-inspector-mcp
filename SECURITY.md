@@ -24,9 +24,9 @@ that is the most valuable thing you can find:
   or `gi_run_test` without `GHOST_INSPECTOR_ALLOW_RUNS=true`.
 - A way to make `gi_validate_test` submit a form or send form data past its
   three guard layers — the static cut, the in-browser probe before every click,
-  and the tripwire armed before every step — beyond the two gaps its description
-  documents (a script that saved `window.fetch` before the page's first step, and
-  data sent by a GET).
+  and the tripwire armed before every step — beyond the gaps its description
+  documents (a script that saved `window.fetch` or `form.submit` before the page's
+  first step, a WebSocket, anything inside a child frame, and data sent by a GET).
 - A path where a basic-auth credential stored on a test or suite, or a private
   variable's value, reaches a tool response or a backup file.
 - A way to make `gi_accept_screenshot` accept a result other than the one named
