@@ -24,6 +24,7 @@
 
 import { pollResult, request, type RunResult, type TestRecord } from "./client.js";
 import { type Steps } from "./graph.js";
+import { evidenceOf, executionTimeMs, type Evidence } from "./results.js";
 import { expandSteps, findSubmit, type Loaded } from "./validate.js";
 
 /**
@@ -61,7 +62,14 @@ export interface RunReport {
   submitAssessment: SubmitAssessment;
   resultId: string | null;
   /** Null when the run was still pending when the wait expired. */
-  outcome: { passing: boolean | null; executionTimeMs: number | null; endUrl: string | null } | null;
+  outcome: {
+    passing: boolean | null;
+    executionTimeMs: number | null;
+    endUrl: string | null;
+    /** Every URL the run visited, in order. */
+    urls: string[];
+    evidence: Evidence;
+  } | null;
   notes: string[];
 }
 
@@ -104,6 +112,45 @@ export function assessSubmit(
     };
   }
   return { submits: false, reason: null, fromModule: null, modulesInlined, chainTruncated: false };
+}
+
+/**
+ * What to say about a finished run of a test that contains a submit-shaped step.
+ *
+ * @param reason Why the step reads as a submit.
+ * @param endUrl Where the run ended.
+ * @param urls Every URL it visited, in order.
+ * @return Notes that report where the run went, never whether a record was created.
+ */
+export function submissionNotes(reason: string, endUrl: string | null, urls: string[]): string[] {
+  const notes = [
+    `This test contains a submit-shaped step (${reason}). The run ended at ${endUrl ?? "an unrecorded URL"} after visiting ${
+      urls.length > 0 ? urls.join(" → ") : "no recorded URL"
+    }. Whether a record was created is decided by the page — check the receiving system rather than assuming either way.`,
+  ];
+  if (endUrl !== null && endUrl === urls[0]) {
+    notes.push(
+      "The run ended on the page it started on, which is consistent with the browser blocking the submission (e.g. native validation).",
+    );
+  }
+  return notes;
+}
+
+/**
+ * The outcome block of a finished run.
+ *
+ * @param result The finished result record.
+ * @return Verdict, duration, where it went and its evidence.
+ */
+function outcomeOf(result: RunResult): NonNullable<RunReport["outcome"]> {
+  const evidence = evidenceOf(result, false);
+  return {
+    passing: result.passing ?? null,
+    executionTimeMs: executionTimeMs(result),
+    endUrl: result.endUrl === undefined || result.endUrl === null ? null : String(result.endUrl),
+    urls: evidence.urls,
+    evidence,
+  };
 }
 
 /**
@@ -162,8 +209,18 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
 
   const notes: string[] = [];
   if (assessment.submits) {
-    notes.push("This run submitted a real form, as confirmed. Check the receiving system if that was not intended.");
+    notes.push(
+      `This test contains a submit-shaped step (${assessment.reason}) and ran as confirmed. Until its outcome is read, whether a record was created is unknown.`,
+    );
   }
+  /**
+   * The notes for a finished run: the submit wording is replaced by one that knows where the run went.
+   * @param outcome The finished run's outcome.
+   */
+  const finishedNotes = (outcome: NonNullable<RunReport["outcome"]>): string[] => [
+    ...(assessment.submits ? submissionNotes(assessment.reason ?? "", outcome.endUrl, outcome.urls) : []),
+    "For the failing step, its error and which test owns it, call gi_test_result on this test.",
+  ];
 
   // 🔴 This endpoint BLOCKS until the run finishes — measured at 50s for a
   // 29s test, the difference being queue time. It does NOT behave like
@@ -197,19 +254,13 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
 
   // Usually already finished, since the POST waited for it. Poll only if not.
   if (pending.passing !== null && pending.passing !== undefined) {
+    const outcome = outcomeOf(pending);
     return {
       started: true,
       submitAssessment: assessment,
       resultId: resultId || null,
-      outcome: {
-        passing: pending.passing,
-        executionTimeMs: typeof pending.executionTime === "number" ? pending.executionTime : null,
-        endUrl: pending.endUrl === undefined || pending.endUrl === null ? null : String(pending.endUrl),
-      },
-      notes: [
-        ...notes,
-        "For the failing step, its error and which test owns it, call gi_test_result on this test.",
-      ],
+      outcome,
+      notes: finishedNotes(outcome),
     };
   }
 
@@ -233,19 +284,13 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
     const finished = await pollResult(resultId, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
+    const outcome = outcomeOf(finished);
     return {
       started: true,
       submitAssessment: assessment,
       resultId,
-      outcome: {
-        passing: finished.passing ?? null,
-        executionTimeMs: typeof finished.executionTime === "number" ? finished.executionTime : null,
-        endUrl: finished.endUrl === undefined || finished.endUrl === null ? null : String(finished.endUrl),
-      },
-      notes: [
-        ...notes,
-        "For the failing step, its error and which test owns it, call gi_test_result on this test.",
-      ],
+      outcome,
+      notes: finishedNotes(outcome),
     };
   } catch (error) {
     // A timeout is not a failure. The run is still going, and reporting it as

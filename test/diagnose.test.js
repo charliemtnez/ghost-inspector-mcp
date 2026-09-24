@@ -9,12 +9,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  alignByPosition,
   authoredSelectors,
   describeFailingStep,
   horizonVerdict,
+  locateFailingStep,
   pickFailingStep,
+  sequencesUsable,
   targetNotes,
 } from "../dist/diagnose.js";
+import { expandSteps } from "../dist/validate.js";
 
 test("a purged run is not reported as a test that never ran", async () => {
   // Caught by exercising the real account: asking for run 99999 of a test with
@@ -117,4 +121,93 @@ test("a step with no source is described rather than dropped", async () => {
   assert.equal(step.error, "boom");
   assert.equal(step.ownedBy, null);
   assert.deepEqual(step.authoredTargets, []);
+});
+
+// --- mapping a result step back to its definition ---------------------------
+
+const SUBMIT = 'button[type="submit"]';
+/** The audit's shape: a 13-step module saved with every sequence at 0, two modules nested inside it. */
+const auditOwners = () => {
+  /** Every step stored at sequence 0, as a client that omits the field leaves them. */
+  const zeroed = (steps) => steps.map((step) => ({ ...step, sequence: 0 }));
+  return new Map([
+    ["root", { name: "Root", isModule: false, steps: [{ command: "click", target: "#open", sequence: 0 }, { command: "execute", value: "mod", sequence: 1 }] }],
+    ["mod", { name: "Form module", isModule: true, steps: zeroed([
+      { command: "assertElementVisible", target: "#form" },
+      { command: "assign", target: "#name" },
+      { command: "execute", value: "modA" },
+      { command: "assign", target: "#zip" },
+      { command: "select", target: "#state" },
+      { command: "execute", value: "modB" },
+      { command: "assign", target: "#a" },
+      { command: "assign", target: "#b" },
+      { command: "assign", target: "#c" },
+      { command: "assign", target: "#d" },
+      { command: "click", target: SUBMIT },
+      { command: "assertElementPresent", target: "#thanks" },
+      { command: "assertTextPresent", target: "body" },
+    ]) }],
+    ["modA", { name: "Contact", isModule: true, steps: zeroed([{ command: "assign", target: "#email" }, { command: "assign", target: "#phone" }]) }],
+    ["modB", { name: "Notes", isModule: true, steps: zeroed([{ command: "assign", target: "#notes" }]) }],
+  ]);
+};
+
+/**
+ * Expand the audit fixture and build the 15-step result it produced, failing at `failAt`.
+ * @param {number} failAt
+ */
+const auditRun = async (failAt) => {
+  const owners = auditOwners();
+  const { steps: expanded } = await expandSteps(owners.get("root").steps, async (id) => owners.get(id), { id: "root", name: "Root" });
+  const result = expanded.map((step, i) => ({
+    command: step.command,
+    target: step.target,
+    passing: i < failAt ? true : i === failAt ? false : null,
+    error: i === failAt ? "Element not found" : "",
+    extra: { rootSequence: 0, source: { test: step.ownerId, sequence: 0 } },
+  }));
+  return { owners, expanded, result };
+};
+
+test("a module saved with every sequence at 0 still maps a failure to the step that failed", async () => {
+  const { owners, expanded, result } = await auditRun(12);
+  assert.equal(result.length, 15);
+  const step = locateFailingStep(result, expanded, owners, { stale: false, truncated: false });
+  assert.equal(step.mapping, "position");
+  assert.deepEqual(step.authoredTargets, [SUBMIT], "the submit, not the module's step 0");
+  assert.equal(step.ownedBy.testId, "mod");
+  assert.equal(step.ownedBy.sequenceInOwner, 10);
+  assert.equal(step.rootSequence, 1);
+});
+
+test("a stale chain is never aligned by position", async () => {
+  const { owners, expanded, result } = await auditRun(12);
+  assert.equal(alignByPosition(result, expanded, { stale: true, truncated: false }), null);
+  assert.equal(alignByPosition(result, expanded, { stale: false, truncated: true }), null);
+  const step = locateFailingStep(result, expanded, owners, { stale: true, truncated: false });
+  assert.notEqual(step.mapping, "position");
+});
+
+test("duplicate sequences fall back to unmapped, never to step 0", async () => {
+  const { owners, expanded, result } = await auditRun(12);
+  const shorter = expanded.slice(0, 14);
+  assert.equal(alignByPosition(result, shorter, { stale: false, truncated: false }), null, "lengths differ");
+  const step = locateFailingStep(result, shorter, owners, { stale: false, truncated: false });
+  assert.equal(step.mapping, "unmapped");
+  assert.equal(step.ownedBy.sequenceInOwner, null);
+  assert.deepEqual(step.authoredTargets, [], "never the target of the module's first step");
+  assert.equal(step.error, "Element not found", "the error itself is never lost");
+});
+
+test("stored sequences are trusted only when they are exactly the positions", () => {
+  assert.equal(sequencesUsable([{ sequence: 0 }, { sequence: 1 }, { sequence: 2 }]), true);
+  assert.equal(sequencesUsable([{ sequence: 0 }, { sequence: 0 }]), false);
+  assert.equal(sequencesUsable([{ sequence: 1 }, { sequence: 0 }]), false);
+  assert.equal(sequencesUsable([{ sequence: 0 }, {}]), false);
+});
+
+test("a result whose commands differ from the definition is not aligned", async () => {
+  const { expanded, result } = await auditRun(12);
+  const edited = result.map((step, i) => (i === 3 ? { ...step, command: "click" } : step));
+  assert.equal(alignByPosition(edited, expanded, { stale: false, truncated: false }), null);
 });

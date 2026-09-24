@@ -365,6 +365,14 @@ server.registerTool(
       "is what needs editing, and editing it affects every test that imports it. " +
       "The step's position in the result is meaningless against the definition; " +
       "use `ownedBy.sequenceInOwner`.\n\n" +
+      "`failingStep.mapping` says how that position was found. `position`: the " +
+      "current definition was expanded locally and lines up with the result step " +
+      "for step. `stored sequence`: it did not, and the result's own stored " +
+      "position was used because the owner's sequences are exactly 0..n-1. " +
+      "`unmapped`: neither held, so sequenceInOwner and authoredTargets are " +
+      "unknown — never guessed. A result's own `extra.source.sequence` is copied " +
+      "from the stored `sequence` field, which a client that omits it leaves at 0 " +
+      "on every step, so it is not trusted on its own.\n\n" +
       "Other cases it distinguishes rather than blurring: a module (import-only " +
       "tests have no results at all), a run still in flight (`passing: null` is " +
       "pending, never failed), a red run with no failing step (the failure was " +

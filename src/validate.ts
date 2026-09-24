@@ -31,6 +31,7 @@ import {
 } from "./client.js";
 import { requireOrgId } from "./config.js";
 import { DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
+import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
 
 /**
  * Targets that look like a form submission. Heuristic on purpose, and biased
@@ -54,6 +55,13 @@ export interface ExpandedStep {
   optional: boolean;
   /** Name of the module this step was inlined from, when it was. */
   fromModule: string | null;
+  /** The test whose own step list holds this step: the root, or a module. */
+  ownerId: string;
+  ownerName: string;
+  /** Position in the owner's array, execute steps counted; not its stored `sequence`. */
+  indexInOwner: number;
+  /** Index of the root-level step that contributed this one. */
+  rootIndex: number;
 }
 
 export interface Loaded {
@@ -107,25 +115,40 @@ export interface Expansion {
 export async function expandSteps(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
+  root: { id: string; name: string } = { id: "", name: "" },
 ): Promise<Expansion> {
   const report = { modules: [] as string[], depth: 0, truncated: false, emptyExecutes: 0 };
-  const expanded = await expand(steps, load, 0, new Set(), null, null, report);
+  const expanded = await expand(steps, load, 0, new Set(), root, null, null, report);
   return { steps: expanded, ...report };
 }
 
+/**
+ * One level of expandSteps: inlines this list's execute steps, recursively.
+ *
+ * @param steps The list being flattened.
+ * @param load Reads one test's name and steps by id.
+ * @param depth Nesting level of this list; 0 is the root.
+ * @param path Module ids on the way here, for cycle detection.
+ * @param owner The test this list belongs to.
+ * @param rootIndex The root-level step being expanded, or null at the root itself.
+ * @param inherited Condition accumulated from the enclosing execute steps.
+ * @param report Counters shared across the whole expansion.
+ * @return The flattened steps.
+ */
 async function expand(
   steps: Steps,
   load: (id: string) => Promise<Loaded>,
   depth: number,
   path: Set<string>,
-  from: string | null,
+  owner: { id: string; name: string },
+  rootIndex: number | null,
   inherited: string | null,
   report: { modules: string[]; depth: number; truncated: boolean; emptyExecutes: number },
 ): Promise<ExpandedStep[]> {
   const out: ExpandedStep[] = [];
   report.depth = Math.max(report.depth, depth);
 
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
     const command = str(step["command"]);
     const own = typeof step["condition"] === "string" ? step["condition"] : null;
     if (command !== "execute") {
@@ -138,7 +161,11 @@ async function expand(
         variableName: str(step["variableName"]),
         condition: andConditions(inherited, own),
         optional: step["optional"] === true,
-        fromModule: from,
+        fromModule: depth > 0 ? owner.name : null,
+        ownerId: owner.id,
+        ownerName: owner.name,
+        indexInOwner: index,
+        rootIndex: rootIndex ?? index,
       });
       continue;
     }
@@ -168,7 +195,8 @@ async function expand(
         load,
         depth + 1,
         new Set([...path, id]),
-        module.name,
+        { id, name: module.name },
+        rootIndex ?? index,
         andConditions(inherited, own),
         report,
       )),
@@ -228,15 +256,14 @@ export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guar
 
   // Proving the submit control is reachable is the point of the whole run, so
   // the dropped step becomes an assertion rather than simply disappearing.
-  if (target) {
+  if (submitting && target) {
     kept.push({
+      ...submitting,
       command: "assertElementVisible",
-      target,
       value: "",
       variableName: "",
       condition: null,
       optional: false,
-      fromModule: submitting?.fromModule ?? null,
     });
   }
 
@@ -299,10 +326,12 @@ export interface ValidationReport {
     stepsPassed: number;
     stepsFailed: number;
     stepsNotReached: number;
+    stepsExecuted: number;
   } | null;
   firstFailure: StepOutcome | null;
   steps: StepOutcome[];
-  consoleErrors: string[];
+  /** Screenshots, video, URLs visited, extractions and console output. Null when nothing ran. */
+  evidence: Evidence | null;
   notes: string[];
 }
 
@@ -407,7 +436,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     configSource = viewport || browser ? "caller override" : "Ghost Inspector defaults";
   }
 
-  const expansion = await expandSteps(defined, load);
+  const expansion = await expandSteps(defined, load, { id: options.testId ?? "", name });
   const expanded = expansion.steps;
   const { steps: toRun, guard } = applyGuard(expanded);
 
@@ -482,7 +511,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
       outcome: null,
       firstFailure: null,
       steps: [],
-      consoleErrors: [],
+      evidence: null,
       notes: [
         "DRY RUN: nothing was sent to Ghost Inspector. No browser started, no page loaded, no request left this machine beyond reading the definitions.",
         ...guardNotes(),
@@ -519,16 +548,10 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   const result = await pollResult(pending._id, { timeoutMs: 300_000, intervalMs: 5_000 });
 
   const stepOutcomes = outcomes(result.steps ?? [], toRun);
-  const consoleErrors = Array.isArray(result["console"])
-    ? (result["console"] as Array<Record<string, unknown>>)
-        .filter((c) => /error|severe/i.test(str(c["level"]) || str(c["type"])))
-        .map((c) => str(c["message"]).slice(0, 300))
-        .filter(Boolean)
-    : [];
-
   const notes: string[] = [
     "Nothing was saved: on-demand execution runs a definition and discards it. The test in the account is untouched.",
     ...guardNotes(),
+    ...(toRun.some((step) => step.command === "eval") ? [EVAL_VALUE_NOTE] : []),
   ];
 
   return {
@@ -536,15 +559,16 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
     executed: true,
     outcome: {
       passing: result.passing,
-      executionTimeMs: result.executionTime ?? null,
+      executionTimeMs: executionTimeMs(result),
       endUrl: result.endUrl ?? null,
       stepsPassed: stepOutcomes.filter((s) => s.status === "passed").length,
       stepsFailed: stepOutcomes.filter((s) => s.status === "failed").length,
       stepsNotReached: stepOutcomes.filter((s) => s.status === "not reached").length,
+      stepsExecuted: stepsExecuted(result.steps ?? []),
     },
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,
     steps: stepOutcomes,
-    consoleErrors,
+    evidence: evidenceOf(result, false),
     notes,
   };
 }

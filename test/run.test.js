@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { assessSubmit, DEFAULT_WAIT_MS } from "../dist/run.js";
+import { assessSubmit, DEFAULT_WAIT_MS, submissionNotes } from "../dist/run.js";
 import { runsAllowed, writesAllowed } from "../dist/config.js";
 
 const step = (over = {}) => ({ command: "click", target: "", value: "", fromModule: null, ...over });
@@ -79,4 +79,18 @@ test("an Enter keypress is treated as a submit", async () => {
   // It submits a focused form without any button being clicked, which is
   // exactly the case a click-only heuristic would wave through.
   assert.equal(assessSubmit([step({ command: "keypress", value: "Enter" })], 0, false).submits, true);
+});
+
+test("a run that never left its start page is not reported as a submission", () => {
+  // Observed: a test whose submit the browser blocked (native validation) was
+  // reported as "submitted a real form", and the reader went looking for a lead.
+  const stayed = submissionNotes("click on a submit-shaped target: #send", "https://example.com/form", ["https://example.com/form"]).join(" ");
+  assert.doesNotMatch(stayed, /submitted a real form/);
+  assert.match(stayed, /decided by the page/);
+  assert.match(stayed, /ended on the page it started on/);
+  const moved = submissionNotes("click on a submit-shaped target: #send", "https://example.com/thanks", [
+    "https://example.com/form", "https://example.com/thanks",
+  ]).join(" ");
+  assert.doesNotMatch(moved, /started on/);
+  assert.match(moved, /example\.com\/form → https:\/\/example\.com\/thanks/);
 });

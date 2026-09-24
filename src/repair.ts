@@ -183,6 +183,12 @@ export async function proposeRepair(testId: string): Promise<RepairPlan> {
     ]);
   }
 
+  if (diagnosis.failingStep.mapping === "unmapped") {
+    return bail("the failing step could not be located in its test", [
+      "Proposing an edit to a step that cannot be identified would rewrite whichever step the guess lands on. See the diagnosis notes for why the mapping failed.",
+    ]);
+  }
+
   // Always the owner, never the test that was asked about: results expand
   // imported modules inline, so the step frequently belongs to a module.
   const definition: TestDetail = await getTest(owner.testId);

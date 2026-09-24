@@ -197,3 +197,27 @@ test("andConditions keeps a lone side verbatim", () => {
   assert.equal(andConditions("return y;", null), "return y;");
   assert.equal(andConditions(null, null), null);
 });
+
+test("every inlined step knows which test owns it and where", async () => {
+  // Result steps map back by position in the owner's own array, so that
+  // position must count the execute steps the expansion replaces.
+  const modules = {
+    outer: { name: "Outer", steps: [{ command: "assign", target: "#a" }, { command: "execute", value: "inner" }, { command: "click", target: "#c" }] },
+    inner: { name: "Inner", steps: [{ command: "assign", target: "#b" }] },
+  };
+  const { steps } = await expandSteps(
+    [{ command: "open", value: "https://example.com" }, { command: "execute", value: "outer" }, { command: "click", target: "#d" }],
+    async (id) => modules[id],
+    { id: "root", name: "Root" },
+  );
+  assert.deepEqual(
+    steps.map((s) => [s.ownerId, s.ownerName, s.indexInOwner, s.rootIndex]),
+    [
+      ["root", "Root", 0, 0],
+      ["outer", "Outer", 0, 1],
+      ["inner", "Inner", 0, 1],
+      ["outer", "Outer", 2, 1],
+      ["root", "Root", 2, 2],
+    ],
+  );
+});
