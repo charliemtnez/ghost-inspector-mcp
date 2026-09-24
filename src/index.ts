@@ -27,7 +27,7 @@ import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
-import { validateTest, type ValidateOptions } from "./validate.js";
+import { planTest, validateTest, type ValidateOptions } from "./validate.js";
 import { getVacuousTests } from "./vacuous.js";
 import { proposeRepair } from "./repair.js";
 import { runTest } from "./run.js";
@@ -534,19 +534,27 @@ server.registerTool(
         .optional()
         .describe('Override, e.g. "1280x800". Omit to use the test\'s, then the suite\'s.'),
       browser: z.string().optional().describe('Override, e.g. "chrome". Omit to replicate the suite\'s.'),
+      stopBefore: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Stop before this plan step (as numbered by gi_plan_test). Can only cut earlier than the guard's own cut; a later value is ignored."),
+      verbose: z
+        .boolean()
+        .optional()
+        .describe("Keep `plan` after a run and return every console entry. Off by default to keep the response small."),
       dryRun: z
         .boolean()
         .optional()
-        .describe(
-          "Report exactly what would run — after modules are inlined and the submit guard applied — and stop. Nothing is sent to Ghost Inspector, no browser starts, no page loads, and no organization id is needed. Use it first on anything that touches production.",
-        ),
+        .describe("Deprecated: use gi_plan_test, which does exactly this and is read-only. Reports what would run and sends nothing."),
     },
     // Not read-only: nothing in the account changes, but a non-dry run drives
     // a real browser against a real URL. Not destructive: it saves nothing
     // and the guard keeps it from submitting.
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
-  async ({ testId, definition, suiteId, variables, viewport, browser, dryRun }) =>
+  async ({ testId, definition, suiteId, variables, viewport, browser, stopBefore, verbose, dryRun }) =>
     safeText(() =>
       validateTest({
         testId,
@@ -555,7 +563,69 @@ server.registerTool(
         variables,
         viewport,
         browser,
+        stopBefore,
+        verbose,
         dryRun,
+      }),
+    ),
+);
+
+server.registerTool(
+  "gi_plan_test",
+  {
+    title: "Ghost Inspector: show what a validation would run, without running it",
+    description:
+      "Read-only. Returns exactly what gi_validate_test would send: modules inlined, " +
+      "{{variables}} resolved from `variables`, the suite and the organization, and " +
+      "all three submit-guard layers applied. Nothing is sent to Ghost Inspector, " +
+      "no browser starts, and no organization id is needed. Use it before any " +
+      "validation of a test that touches production.\n\n" +
+      "`plan` lists the steps in order, numbered as every other report numbers " +
+      "them. `guard.stoppedAt` is the static cut, where a submit-shaped step " +
+      "became an assertion on its target. `guard.probedClicks` counts the clicks " +
+      "that will be probed in the browser before they run. `variables` shows what " +
+      "was resolved, what is left for a step that sets it at run time, and what " +
+      "has no value. `wouldRefuse` is non-null when gi_validate_test would refuse " +
+      "the run before sending anything, and says why.",
+    inputSchema: {
+      testId: z.string().optional().describe("Existing test to plan. Its suite's configuration and variables are replicated."),
+      definition: z
+        .object({
+          name: z.string().optional(),
+          startUrl: z.string().describe("Where the run begins."),
+          steps: z.array(STEP_SCHEMA).describe("Steps in execution order."),
+        })
+        .optional()
+        .describe("Ad-hoc definition to plan instead of an existing test."),
+      suiteId: z
+        .string()
+        .optional()
+        .describe("With `definition`: the suite whose configuration and variables it runs with."),
+      variables: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Variable values, e.g. {"subdomain": "www"}. Win over the suite\'s and the organization\'s.'),
+      viewport: z.string().optional().describe('Override, e.g. "1280x800".'),
+      browser: z.string().optional().describe('Override, e.g. "chrome".'),
+      stopBefore: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Stop before this plan step. Can only cut earlier than the guard's own cut."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, definition, suiteId, variables, viewport, browser, stopBefore }) =>
+    safeText(() =>
+      planTest({
+        testId,
+        definition: definition as ValidateOptions["definition"],
+        suiteId,
+        variables,
+        viewport,
+        browser,
+        stopBefore,
       }),
     ),
 );

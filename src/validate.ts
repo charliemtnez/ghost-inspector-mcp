@@ -567,6 +567,8 @@ export interface ValidateOptions {
   browser?: string | undefined;
   /** Stop before this plan step. Only ever earlier than the guard's own cut. */
   stopBefore?: number | undefined;
+  /** Keep `plan` after a run and every console entry, not only the first 20 errors. */
+  verbose?: boolean | undefined;
   /**
    * Report what would run and stop. Nothing is sent to Ghost Inspector, so no
    * browser starts and no page is loaded — the only way to inspect the guard's
@@ -857,6 +859,38 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   return maskPrivate(report, vars);
 }
 
+export interface PlanReport {
+  ranAs: ValidationReport["ranAs"];
+  expansion: ValidationReport["expansion"];
+  variables: ValidationReport["variables"];
+  guard: ReportGuard;
+  plan: PlannedStep[];
+  /** Why gi_validate_test would refuse this run before sending anything, or null. */
+  wouldRefuse: string | null;
+  notes: string[];
+}
+
+/**
+ * What a validation would run, after modules, variables and all three guard layers, without sending anything.
+ *
+ * @param options As for validateTest; `dryRun` and `verbose` do not apply.
+ * @return The plan, the guard's decisions and whether the run would be refused.
+ * @throws {GhostInspectorError} when reading a definition fails.
+ */
+export async function planTest(options: Omit<ValidateOptions, "dryRun" | "verbose">): Promise<PlanReport> {
+  const { report, vars, refusal } = await runValidation({ ...options, dryRun: true });
+  const { ranAs, expansion, variables, guard, plan, notes } = maskPrivate(report, vars);
+  return {
+    ranAs,
+    expansion,
+    variables,
+    guard,
+    plan,
+    wouldRefuse: refusal === null ? null : maskPrivate(refusal, vars),
+    notes: notes.filter((note) => !note.startsWith("DRY RUN") && note !== refusal),
+  };
+}
+
 /**
  * validateTest's body, returning the variables alongside so every path can be masked in one place.
  *
@@ -865,7 +899,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
  */
 async function runValidation(
   options: ValidateOptions,
-): Promise<{ report: ValidationReport; vars: ReadonlyMap<string, VariableValue> }> {
+): Promise<{ report: ValidationReport; vars: ReadonlyMap<string, VariableValue>; refusal: string | null }> {
   if ((options.testId && options.definition) || (!options.testId && !options.definition)) {
     throw new Error(
       "Pass exactly one of testId (validate an existing test) or definition (validate an ad-hoc definition).",
@@ -1047,7 +1081,7 @@ async function runValidation(
       executed: false,
       notes: [prepared.refusal, ...guardNotes()],
     };
-    return { report, vars };
+    return { report, vars, refusal: prepared.refusal };
   }
 
   if (options.dryRun) {
@@ -1058,10 +1092,10 @@ async function runValidation(
       notes: [
         "DRY RUN: nothing was sent to Ghost Inspector. No browser started, no page loaded, no request left this machine beyond reading the definitions.",
         ...guardNotes(),
-        "`plan` is exactly what a real run would execute, in order.",
+        "`plan` is exactly what a real run would execute, in order. dryRun is deprecated: gi_plan_test does the same and is read-only.",
       ],
     };
-    return { report, vars };
+    return { report, vars, refusal: null };
   }
 
   const runOrg = requireOrgId();
@@ -1124,8 +1158,12 @@ async function runValidation(
     settingsCheck: drift,
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,
     steps: stepOutcomes,
-    evidence: evidenceOf(result, false),
+    evidence: evidenceOf(result, options.verbose === true),
     notes,
   };
-  return { report, vars };
+  if (options.verbose !== true) {
+    report.plan = [];
+    notes.push("`plan` is omitted after a run, since `steps` covers the same ground; pass verbose:true for it and every console entry.");
+  }
+  return { report, vars, refusal: null };
 }
