@@ -274,3 +274,50 @@ export async function fetchDefinitions(tests: TestRecord[]): Promise<Definitions
   for (const entry of fetched) if (entry) steps.set(entry.id, entry.steps);
   return { steps, unreadable: tests.length - steps.size };
 }
+
+/**
+ * Steps for a set of tests and every module they import, transitively, up to the documented depth.
+ *
+ * @param ids The tests in scope.
+ * @param load Reads one test's steps, or null when it cannot be read.
+ * @return Steps by test id, plus how many could not be read.
+ */
+export async function fetchDefinitionsClosure(
+  ids: string[],
+  load: (id: string) => Promise<Steps | null> = loadSteps,
+): Promise<Definitions> {
+  const steps = new Map<string, Steps>();
+  const seen = new Set<string>();
+  let unreadable = 0;
+  let frontier = [...new Set(ids)];
+  for (let depth = 0; depth <= DOCUMENTED_MAX_DEPTH && frontier.length > 0; depth += 1) {
+    for (const id of frontier) seen.add(id);
+    const loaded = await pool(frontier, REQUEST_CONCURRENCY, async (id) => ({ id, steps: await load(id) }));
+    const next = new Set<string>();
+    for (const entry of loaded) {
+      if (entry.steps === null) {
+        unreadable += 1;
+        continue;
+      }
+      steps.set(entry.id, entry.steps);
+      for (const child of executedIds(entry.steps)) if (!seen.has(child)) next.add(child);
+    }
+    frontier = [...next];
+  }
+  return { steps, unreadable };
+}
+
+/**
+ * One test's steps from the API.
+ *
+ * @param id The test.
+ * @return Its steps, or null when it cannot be read.
+ */
+async function loadSteps(id: string): Promise<Steps | null> {
+  try {
+    const full = await request<TestRecord>("GET", `tests/${id}`);
+    return (full.steps ?? []) as Steps;
+  } catch {
+    return null;
+  }
+}
