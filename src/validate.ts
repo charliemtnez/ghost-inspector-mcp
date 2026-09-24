@@ -780,6 +780,19 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
 }
 
 /**
+ * A validation's evidence, without the extractions the injected guard wrote for itself.
+ *
+ * @param result The finished on-demand result.
+ * @param verbose Return every console entry.
+ * @return The evidence; the guard's findings are reported under `guard` instead.
+ */
+export function validationEvidence(result: Record<string, unknown>, verbose: boolean): Evidence {
+  const evidence = evidenceOf(result, verbose);
+  const extractions = Object.fromEntries(Object.entries(evidence.extractions).filter(([key]) => !key.startsWith("giGuard")));
+  return { ...evidence, extractions };
+}
+
+/**
  * Replaces every private variable's value with "(private)" in every string of a report.
  *
  * @param value The report, or any part of it.
@@ -1198,7 +1211,7 @@ async function runValidation(
     settingsCheck: drift,
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,
     steps: stepOutcomes,
-    evidence: evidenceOf(result, options.verbose === true),
+    evidence: validationEvidence(result, options.verbose === true),
     notes,
   };
   if (options.verbose !== true) {

@@ -24,6 +24,7 @@ import {
   prepareRun,
   settingsCheck,
   settingsFor,
+  validationEvidence,
 } from "../dist/validate.js";
 
 const S = (command, target = "", value = "", fromModule = null) => ({
@@ -518,4 +519,13 @@ test("a plan with no click still arms the tripwire before its first step", async
   const { sent, map } = injectGuards(steps);
   assert.equal(map.filter((m) => m.kind === "probe").length, 0);
   assert.match(sent[0].condition, /HTMLFormElement\.prototype\.submit/, "the first step's own condition arms it");
+});
+
+test("the guard's own extractions never come back as evidence", () => {
+  // giGuardLog keeps every blocked URL with its query string; guard reports
+  // the summarised version, so the raw one must not travel alongside it.
+  const evidence = validationEvidence({
+    extractions: { giGuardLog: '{"blocked":["fetch POST https://example.com/c?sid=secret"]}', giGuardProbe3: "clear", formSelector: "#lead" },
+  }, false);
+  assert.deepEqual(evidence.extractions, { formSelector: "#lead" });
 });
