@@ -25,6 +25,7 @@ import { getTest, readBatch } from "./detail.js";
 import { findTests } from "./find.js";
 import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
+import { testHistory } from "./history.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
 import { getStaleTests } from "./stale.js";
@@ -472,6 +473,31 @@ server.registerTool(
   },
   async ({ testId, testIds, runsBack }) =>
     safeText(() => oneOrMany(testId, testIds, (id) => diagnoseTest({ testId: id, runsBack }))),
+);
+
+server.registerTool(
+  "gi_test_history",
+  {
+    title: "Ghost Inspector: a test's run history, and when its red began",
+    description:
+      "Read-only. Walks a test's results newest first, 50 per page, and returns " +
+      "each run's verdict and failing step (command, error, the selector that " +
+      "resolved), plus `lastPass` and `firstFail`, the oldest failure of the current " +
+      "red streak, which dates a regression.\n\n" +
+      "🔴 Read `horizon` before concluding anything. Ghost Inspector purges old " +
+      "results. `exhausted: true` means retention ended there and nothing older " +
+      "exists. `exhausted: false` means more history exists than was asked for, and " +
+      "`streakMayContinue` says the red streak may have begun earlier: raise `runs`. " +
+      "A run with `passing: null` is in flight, never a failure. Modules are refused: " +
+      "import-only deletes their results. For why the latest run failed, " +
+      "gi_test_result maps the failing step back to its definition.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+      runs: z.number().int().min(1).max(500).optional().describe("How many runs to walk back. Default 50, at most 500; one request per 50."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, runs }) => safeText(() => testHistory({ testId, runs })),
 );
 
 server.registerTool(
