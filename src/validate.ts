@@ -55,8 +55,8 @@ const SUBMIT_SCRIPT =
 /** Commands whose `value` is a script the page runs. */
 const SCRIPT_COMMANDS = new Set(["eval", "assertEval", "extractEval"]);
 
-/** In run mode, a click target that names a control: after a field is filled, it may send the form. */
-const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button/i;
+/** In run mode, a click target that names a control, or that a variable fills: after a field is filled, it may send the form. */
+const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button|\{\{/i;
 
 /** Key values that submit a focused form. */
 const SUBMIT_KEY = /^(enter|return|\\n|\\r|13)$/i;

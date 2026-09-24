@@ -7,7 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { assessSubmit, DEFAULT_WAIT_MS, submissionNotes } from "../dist/run.js";
+import { assessRun, assessSubmit, DEFAULT_WAIT_MS, submissionNotes } from "../dist/run.js";
+import { collectVariables } from "../dist/variables.js";
 import { runsAllowed, writesAllowed } from "../dist/config.js";
 
 const step = (over = {}) => ({ command: "click", target: "", value: "", fromModule: null, ...over });
@@ -112,4 +113,22 @@ test("closing a modal is not a submission", () => {
     step({ command: "assertElementNotVisible", target: ".modal" }),
   ], 0, false);
   assert.equal(a.submits, false, "no field was filled, so a button click cannot send one");
+});
+
+test("a submit hidden in a suite variable still asks for confirmation", () => {
+  // The stored run resolves {{submitBtn}} server-side; checking the raw step
+  // saw "{{submitBtn}}" and let a real lead post without being asked.
+  const steps = [
+    step({ command: "assign", target: "#email", authoredTarget: "#email", value: "jane@example.com", condition: null }),
+    step({ target: "{{submitBtn}}", authoredTarget: "{{submitBtn}}", condition: null }),
+  ];
+  const vars = collectVariables({ suite: [{ name: "submitBtn", value: '#lead button[type="submit"]' }] });
+  const a = assessRun(steps, 0, false, vars);
+  assert.equal(a.submits, true);
+  assert.match(a.reason, /submit/);
+});
+
+test("a click on a variable still unresolved after an assign asks for confirmation", () => {
+  const a = assessSubmit([step({ command: "assign", target: "#email", value: "x" }), step({ target: "{{cta}}" })], 0, false);
+  assert.equal(a.submits, true);
 });

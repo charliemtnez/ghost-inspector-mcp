@@ -25,7 +25,8 @@
 import { pollResult, request, type RunResult, type TestRecord } from "./client.js";
 import { type Steps } from "./graph.js";
 import { evidenceOf, executionTimeMs, type Evidence } from "./results.js";
-import { expandSteps, findSubmit, type Loaded } from "./validate.js";
+import { expandSteps, findSubmit, type ExpandedStep, type Loaded } from "./validate.js";
+import { resolveDefinition, variablesFor, type VariableValue } from "./variables.js";
 
 /**
  * How long to wait on the execute call.
@@ -154,6 +155,24 @@ function outcomeOf(result: RunResult): NonNullable<RunReport["outcome"]> {
 }
 
 /**
+ * assessSubmit over the steps as they will actually run: with the suite's and organization's variables filled in.
+ *
+ * @param expanded Steps after modules are inlined.
+ * @param modulesInlined How many modules contributed.
+ * @param truncated Whether the expansion hit the nesting limit or looped.
+ * @param vars The variables the stored run resolves server-side.
+ * @return The assessment of the resolved steps.
+ */
+export function assessRun(
+  expanded: ExpandedStep[],
+  modulesInlined: number,
+  truncated: boolean,
+  vars: ReadonlyMap<string, VariableValue>,
+): SubmitAssessment {
+  return assessSubmit(resolveDefinition("", expanded, vars).steps, modulesInlined, truncated);
+}
+
+/**
  * Executes a stored test and waits for the verdict.
  *
  * @param options The test, and confirmation if it submits.
@@ -185,7 +204,8 @@ export async function runTest(options: RunOptions): Promise<RunReport> {
     return { name: String(record.name ?? ""), steps: (Array.isArray(record.steps) ? record.steps : []) as Steps };
   };
   const expansion = await expandSteps((Array.isArray(test.steps) ? test.steps : []) as Steps, load);
-  const assessment = assessSubmit(expansion.steps, expansion.modules.length, expansion.truncated);
+  const vars = await variablesFor(test);
+  const assessment = assessRun(expansion.steps, expansion.modules.length, expansion.truncated, vars);
 
   if (assessment.submits && options.confirmSubmit !== true) {
     return {
