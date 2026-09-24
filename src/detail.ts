@@ -10,7 +10,8 @@
  */
 
 import { request, type TestRecord } from "./client.js";
-import { pool, REQUEST_CONCURRENCY } from "./graph.js";
+import { pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { expandSteps } from "./validate.js";
 
 /** A test as the caller needs it before editing: identity, token, definition. */
 export interface TestDetail {
@@ -86,15 +87,63 @@ export function toDetail(test: TestRecord, fallbackId = ""): TestDetail {
   };
 }
 
+export interface ExpandedDetail extends TestDetail {
+  /** Every step that would run, modules inlined, each with its owner and inherited condition. */
+  expanded: Array<{
+    command: string;
+    target: string;
+    value: string;
+    condition: string | null;
+    ownerId: string;
+    ownerName: string;
+    indexInOwner: number;
+    rootIndex: number;
+  }>;
+  expansion: { modules: string[]; depth: number; truncated: boolean; emptyExecutes: number };
+}
+
 /**
- * Reads one test, the shape an edit is composed against.
+ * Reads one test, the shape an edit is composed against, optionally with its modules inlined.
  *
  * @param testId The test.
+ * @param options `expandModules` adds `expanded`: what a run executes, step by step.
  * @return The test's own definition and its concurrency token.
  * @throws {GhostInspectorError} when the test does not exist or a call fails.
  */
-export async function getTest(testId: string): Promise<TestDetail> {
-  return toDetail(await request<TestRecord>("GET", `tests/${testId}`), testId);
+export async function getTest(
+  testId: string,
+  options: { expandModules?: boolean | undefined } = {},
+): Promise<TestDetail | ExpandedDetail> {
+  const record = await request<TestRecord>("GET", `tests/${testId}`);
+  const detail = toDetail(record, testId);
+  if (options.expandModules !== true) return detail;
+  const expansion = await expandSteps(
+    detail.steps as Steps,
+    async (id) => {
+      const module = await request<TestRecord>("GET", `tests/${id}`);
+      return { name: String(module.name ?? id), steps: (module.steps ?? []) as Steps };
+    },
+    { id: detail.id, name: detail.name },
+  );
+  return {
+    ...detail,
+    expanded: expansion.steps.map((step) => ({
+      command: step.command,
+      target: step.target,
+      value: step.value,
+      condition: step.condition,
+      ownerId: step.ownerId,
+      ownerName: step.ownerName,
+      indexInOwner: step.indexInOwner,
+      rootIndex: step.rootIndex,
+    })),
+    expansion: {
+      modules: expansion.modules,
+      depth: expansion.depth,
+      truncated: expansion.truncated,
+      emptyExecutes: expansion.emptyExecutes,
+    },
+  };
 }
 
 /**

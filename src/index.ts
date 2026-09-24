@@ -402,10 +402,17 @@ server.registerTool(
         .max(20)
         .optional()
         .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error; one failure does not sink the rest."),
+      expandModules: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also return `expanded`: every step a run would execute, modules inlined, each with ownerId, ownerName, indexInOwner (its position in its owner's own list), rootIndex and the combined condition. It lines up with a result's steps position by position.",
+        ),
     },
     annotations: READ_ONLY,
   },
-  async ({ testId, testIds }) => safeText(() => oneOrMany(testId, testIds, (id) => getTest(id))),
+  async ({ testId, testIds, expandModules }) =>
+    safeText(() => oneOrMany(testId, testIds, (id) => getTest(id, { expandModules }))),
 );
 
 server.registerTool(
