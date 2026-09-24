@@ -356,7 +356,7 @@ export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map:
           command: "extractEval",
           target: "",
           authoredTarget: "",
-          value: probeScript(selectorsOf(step.authoredTarget), planIndex),
+          value: probeScript(selectorsOf(step.authoredTarget), planIndex, step.optional),
           variableName: `giGuardProbe${planIndex}`,
           condition,
           optional: false,

@@ -111,7 +111,13 @@ const page = (options = {}) => {
   };
   const env = {
     window,
-    document: { querySelector: (selector) => elements[selector] ?? null, evaluate: () => ({ singleNodeValue: null }) },
+    document: {
+      querySelector: (selector) => {
+        if (selector.startsWith("!!")) throw new SyntaxError("not a selector");
+        return elements[selector] ?? null;
+      },
+      evaluate: () => ({ singleNodeValue: null }),
+    },
     navigator: { sendBeacon: () => { fetched.push("beacon sent"); return true; } },
     HTMLFormElement: { prototype: { submit() { fetched.push("form submitted"); } } },
     XMLHttpRequest: FakeXhr,
@@ -184,4 +190,17 @@ test("the tripwire is armed before every step, not only before a click", async (
   p.run(stopCondition());
   assert.equal(p.listeners.filter((l) => l.type === "submit").length, 1, "still armed once per page");
   assert.deepEqual(JSON.parse(p.run(logScript())).blocked, ["fetch POST https://example.com/lead"]);
+});
+
+test("an optional click on something absent is skipped, not a reason to stop", () => {
+  // Close-the-popup-if-present: the element legitimately is not there.
+  const p = page();
+  assert.equal(p.run(probeScript(["#cookie-banner .close"], 2, true)), "clear");
+  assert.equal(p.run(stopCondition()), true);
+});
+
+test("an optional click still stops on a selector the probe cannot read, or on a submit", () => {
+  assert.match(page().run(probeScript(["!!unparseable"], 2, true)), /not resolvable/);
+  assert.match(page().run(probeScript(["#go"], 2, true)), /submit button/);
+  assert.match(page().run(probeScript(["#cookie-banner .close"], 2)), /not resolvable/, "a required click is unchanged");
 });
