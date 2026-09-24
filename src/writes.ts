@@ -265,7 +265,7 @@ export interface UpdateOptions {
   testId: string;
   steps?: Steps | undefined;
   name?: string | undefined;
-  /** Accepted by `POST /tests/{id}/` — not verified live; guard 4 checks every write of it. */
+  /** Accepted by `POST /tests/{id}/`, verified live; guard 4 still reads it back on every write. */
   startUrl?: string | undefined;
   /** The `dateUpdated` the caller believes is current. Proof it read the record. */
   expectedDateUpdated: string;
