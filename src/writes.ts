@@ -82,13 +82,18 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
  * @param options The fields being changed.
  * @returns The JSON body for `POST /tests/{id}/`.
  */
-export function buildUpdateBody(
-  options: Pick<UpdateOptions, "steps" | "name">,
-): { steps?: Steps; name?: string } {
-  const body: { steps?: Steps; name?: string } = {};
+export function buildUpdateBody(options: Pick<UpdateOptions, "steps" | "name" | "startUrl">): UpdateBody {
+  const body: UpdateBody = {};
   if (options.steps !== undefined) body.steps = options.steps.map((step, i) => ({ ...step, sequence: i }));
   if (options.name !== undefined) body.name = options.name;
+  if (options.startUrl !== undefined) body.startUrl = options.startUrl;
   return body;
+}
+
+export interface UpdateBody {
+  steps?: Steps;
+  name?: string;
+  startUrl?: string;
 }
 
 export interface ChainChange {
@@ -232,6 +237,8 @@ export interface UpdateResult {
   verification: {
     stepsMatch: boolean;
     stepDiffs: FieldDiff[];
+    /** `name` and `startUrl`, when sent, as read back. */
+    fieldDiffs: FieldDiff[];
     untouchedFieldsIntact: boolean;
     unexpectedChanges: FieldDiff[];
   } | null;
@@ -242,6 +249,8 @@ export interface UpdateOptions {
   testId: string;
   steps?: Steps | undefined;
   name?: string | undefined;
+  /** Accepted by `POST /tests/{id}/` — not verified live; guard 4 checks every write of it. */
+  startUrl?: string | undefined;
   /** The `dateUpdated` the caller believes is current. Proof it read the record. */
   expectedDateUpdated: string;
   /** Required to proceed when guard 1 reports the test as stale. */
@@ -352,11 +361,14 @@ export function refusedResult(context: WriteContext, why: string, notes: string[
  */
 export function appliedResult(
   context: WriteContext,
-  body: ReturnType<typeof buildUpdateBody>,
+  body: UpdateBody,
   after: TestRecord,
 ): UpdateResult {
   const { before, staleness, sentFields } = context;
   const stepDiffs = body.steps !== undefined ? diffSteps(body.steps, (after.steps ?? []) as Steps) : [];
+  const fieldDiffs = (["name", "startUrl"] as const)
+    .filter((field) => body[field] !== undefined && after[field] !== body[field])
+    .map((field) => ({ field, sent: body[field], stored: after[field] }));
   const unexpected = diffUntouched(before, after, sentFields);
   const dateUpdated = String(after.dateUpdated ?? "");
 
@@ -369,12 +381,17 @@ export function appliedResult(
       `🔴 THE WRITE DID NOT LAND AS SENT: ${stepDiffs.length} step difference(s) after re-reading. Compare and consider restoring from backup.`,
     );
   }
+  if (fieldDiffs.length > 0) {
+    notes.push(
+      `🔴 THE WRITE DID NOT LAND AS SENT: ${fieldDiffs.map((d) => d.field).join(", ")} reads back different from what was sent.`,
+    );
+  }
   if (unexpected.length > 0) {
     notes.push(
       `🔴 ${unexpected.length} field(s) changed that were never sent: ${unexpected.map((d) => d.field).join(", ")}. A partial update is documented to preserve everything else, so this contradicts the contract — verify before trusting it.`,
     );
   }
-  if (stepDiffs.length === 0 && unexpected.length === 0) {
+  if (stepDiffs.length === 0 && fieldDiffs.length === 0 && unexpected.length === 0) {
     notes.push("Verified: what was sent landed exactly, and nothing else moved.");
   }
   if (staleness.verdict === "stale") {
@@ -397,6 +414,7 @@ export function appliedResult(
     verification: {
       stepsMatch: stepDiffs.length === 0,
       stepDiffs,
+      fieldDiffs,
       untouchedFieldsIntact: unexpected.length === 0,
       unexpectedChanges: unexpected,
     },
@@ -405,7 +423,7 @@ export function appliedResult(
 }
 
 /**
- * Updates a test's steps or name, behind the four guards.
+ * Updates a test's steps, name or start URL, behind the four guards.
  *
  * @param options The change, plus the concurrency token.
  * @returns What was refused or applied, the prior definition, and the diff.
@@ -413,8 +431,8 @@ export function appliedResult(
  * @throws {ConfigError} when the API key is not configured.
  */
 export async function updateTest(options: UpdateOptions): Promise<UpdateResult> {
-  if (options.steps === undefined && options.name === undefined) {
-    throw new Error("Nothing to change: pass steps, name, or both.");
+  if (options.steps === undefined && options.name === undefined && options.startUrl === undefined) {
+    throw new Error("Nothing to change: pass steps, name or startUrl.");
   }
 
   const before = await request<TestRecord>("GET", `tests/${options.testId}`);
@@ -439,6 +457,7 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   const sentFields = [
     ...(options.steps !== undefined ? ["steps"] : []),
     ...(options.name !== undefined ? ["name"] : []),
+    ...(options.startUrl !== undefined ? ["startUrl"] : []),
   ];
 
   const context: WriteContext = { before, staleness, sentFields, chainLength: chain.length };

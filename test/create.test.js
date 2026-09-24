@@ -74,3 +74,9 @@ test("a suite with no folder is comparable without throwing", async () => {
   assert.equal(nameClashes(existing, "Loose", "f1").length, 0);
   assert.equal(nameClashes(existing, "Loose", "").length, 1, "unfiled reads as the empty folder");
 });
+
+test("a copy can be re-pointed in the same call", async () => {
+  const changes = plannedChanges({ sourceTestId: "x", startUrl: "https://example.com/staging/" });
+  assert.equal(changes.startUrl, "https://example.com/staging/");
+  assert.ok(!("startUrl" in plannedChanges({ sourceTestId: "x" })), "no startUrl means the source's is kept");
+});

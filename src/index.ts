@@ -530,7 +530,7 @@ server.registerTool(
     {
       title: "Ghost Inspector: update a test, behind four guards",
       description:
-        "Replaces a test's steps and/or renames it. 🔴 Ghost Inspector keeps NO " +
+        "Replaces a test's steps, renames it, or changes its startUrl. 🔴 Ghost Inspector keeps NO " +
         "version history of steps and no recycle bin, so this is permanent.\n\n" +
         "Four guards run on every call and none can be turned off. (1) The whole " +
         "`execute` chain's `dateUpdated` is compared against the test's last run; " +
@@ -570,6 +570,10 @@ server.registerTool(
           .optional()
           .describe("Replacement step list, in order. Replaces the whole array — send every step you want kept."),
         name: z.string().optional().describe("New name. Renaming does not move the test or break importers, which reference it by id."),
+        startUrl: z
+          .string()
+          .optional()
+          .describe("New start URL. Read back after the write like everything else sent. A module's startUrl is never visited: its importer decides where it starts."),
         confirmStaleDiagnosis: z
           .boolean()
           .optional()
@@ -584,13 +588,14 @@ server.registerTool(
       // Destructive is the honest word: no version history, no recycle bin.
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ testId, expectedDateUpdated, steps, name, confirmStaleDiagnosis, verbose }) =>
+    async ({ testId, expectedDateUpdated, steps, name, startUrl, confirmStaleDiagnosis, verbose }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         updateTest({
           testId,
           expectedDateUpdated,
           steps: steps as Steps | undefined,
           name,
+          startUrl,
           confirmStaleDiagnosis,
           verbose,
         }),
@@ -696,6 +701,7 @@ server.registerTool(
         sourceTestId: z.string().describe("The test to copy. Required — there is no create."),
         name: z.string().optional().describe('New name. Defaults to "<source> (Copy)".'),
         suiteId: z.string().optional().describe("Suite to place it in. Defaults to the source's suite."),
+        startUrl: z.string().optional().describe("Where the copy starts. Defaults to the source's startUrl."),
         keepSchedule: z
           .boolean()
           .optional()
@@ -704,9 +710,9 @@ server.registerTool(
       // Additive: it creates a new record and overwrites nothing existing.
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async ({ sourceTestId, name, suiteId, keepSchedule }) =>
+    async ({ sourceTestId, name, suiteId, startUrl, keepSchedule }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
-        duplicateTest({ sourceTestId, name, suiteId, keepSchedule }),
+        duplicateTest({ sourceTestId, name, suiteId, startUrl, keepSchedule }),
       ),
   );
 

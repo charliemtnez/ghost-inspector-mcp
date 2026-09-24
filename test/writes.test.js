@@ -257,6 +257,19 @@ test("credential-shaped keys are stripped at any depth, everything else kept", (
   assert.deepEqual(clean, { name: "n", nested: [{ target: "#a" }] });
 });
 
+test("a startUrl that did not land is reported", () => {
+  const before = subject({ startUrl: "https://example.com/old", steps: [] });
+  const body = buildUpdateBody({ startUrl: "https://example.com/new" });
+  assert.equal(body.startUrl, "https://example.com/new");
+  const ignored = appliedResult({ ...context(before), sentFields: ["startUrl"] }, body, { ...before, dateUpdated: AFTER });
+  assert.deepEqual(ignored.verification.fieldDiffs.map((d) => d.field), ["startUrl"]);
+  assert.ok(ignored.notes.some((note) => note.includes("DID NOT LAND")));
+  const landed = appliedResult(
+    { ...context(before), sentFields: ["startUrl"] }, body, { ...before, dateUpdated: AFTER, startUrl: "https://example.com/new" },
+  );
+  assert.equal(landed.verification.fieldDiffs.length, 0);
+});
+
 // --- the backup on disk -----------------------------------------------------
 
 /**
