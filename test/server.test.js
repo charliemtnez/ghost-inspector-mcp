@@ -21,6 +21,7 @@ const READ_ONLY = [
   "gi_get_test",
   "gi_inventory",
   "gi_module_usage",
+  "gi_plan_test",
   "gi_propose_repair",
   "gi_stale_tests",
   "gi_test_result",
@@ -296,4 +297,29 @@ test("a tool call with no API key fails with instructions, not a stack trace", a
   const text = reply.result.content[0].text;
   assert.match(text, /Account Settings/, "must say where to get a key");
   assert.ok(!/\bat \w+ \(/.test(text), "must not leak a stack trace");
+});
+
+test("gi_plan_test shows the cut before a submit without a key, an org id or a browser", async () => {
+  const { text } = await callTool("gi_plan_test", {
+    definition: {
+      startUrl: "https://example.com/",
+      steps: [
+        { command: "assign", target: "#email", value: "jane@example.com" },
+        { command: "click", target: "#next" },
+        { command: "click", target: 'button[type="submit"]' },
+      ],
+    },
+  });
+  const plan = JSON.parse(text);
+  assert.equal(plan.guard.stoppedAt, 2, "the static cut lands on the submit");
+  assert.equal(plan.guard.probedClicks, 1, "the click before it is probed in the browser");
+  assert.equal(plan.wouldRefuse, null);
+  assert.equal(plan.plan[2].command, "assertElementVisible");
+});
+
+test("gi_plan_test says a run would be refused over an unresolved variable", async () => {
+  const { text } = await callTool("gi_plan_test", { definition: { startUrl: "https://{{nope}}.example.com/", steps: [] } });
+  const plan = JSON.parse(text);
+  assert.match(plan.wouldRefuse, /\{\{nope\}\}/);
+  assert.deepEqual(plan.variables.unresolved.map((u) => u.name), ["nope"]);
 });

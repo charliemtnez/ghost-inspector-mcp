@@ -94,3 +94,22 @@ test("a run that never left its start page is not reported as a submission", () 
   assert.doesNotMatch(moved, /started on/);
   assert.match(moved, /example\.com\/form → https:\/\/example\.com\/thanks/);
 });
+
+test("a button click after filling fields asks for confirmation", () => {
+  // A form's own submit is often named for its label ("Get my guide"), which
+  // the target heuristic cannot see. After an assign, any button is suspect.
+  for (const target of ["#lead-form button.primary", "input.cta", "[role=button].next", "form .step [type=button]"]) {
+    const a = assessSubmit([step({ command: "assign", target: "#email", value: "jane@example.com" }), step({ target })], 0, false);
+    assert.equal(a.submits, true, `should ask for: ${target}`);
+  }
+});
+
+test("closing a modal is not a submission", () => {
+  const a = assessSubmit([
+    step({ target: "#open-guide" }),
+    step({ target: ".modal button.close" }),
+    step({ target: "button[aria-label=Close]" }),
+    step({ command: "assertElementNotVisible", target: ".modal" }),
+  ], 0, false);
+  assert.equal(a.submits, false, "no field was filled, so a button click cannot send one");
+});

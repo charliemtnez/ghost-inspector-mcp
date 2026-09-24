@@ -9,12 +9,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { stopCondition } from "../dist/guard-script.js";
+
 import {
   andConditions,
   applyGuard,
   expandSteps,
   findSubmit,
+  injectGuards,
   maskPrivate,
+  readGuardedResult,
   outcomesOf,
   planOf,
   prepareRun,
@@ -57,6 +61,47 @@ test("a script that can activate a control is caught", () => {
   ]) {
     assert.ok(findSubmit([S("eval", "", body)]), `should catch: ${body}`);
   }
+});
+
+test("an extractEval that posts data is a submit", () => {
+  for (const body of [
+    "return fetch('/api/lead', { method: 'POST', body: '{}' }).then(() => 'ok');",
+    "var x = new XMLHttpRequest(); x.open('POST', '/lead'); x.send(); return 'sent';",
+    "navigator.sendBeacon('/lead', 'x'); return 1;",
+    "return $.ajax({ url: '/lead', type: 'POST' });",
+    "$.post('/lead', {}); return 1;",
+    "return axios.post('/lead', {});",
+    "document.querySelector('#f').dispatchEvent(new Event('submit')); return 1;",
+  ]) {
+    assert.ok(findSubmit([S("extractEval", "", body)]), `should catch: ${body}`);
+  }
+});
+
+test("a condition can submit too", () => {
+  // A condition is a script the page evaluates before the step: it can do
+  // anything an eval can, and it rides on steps that look harmless.
+  const step = { ...S("click", "#next"), condition: "document.forms[0].requestSubmit(); return true;" };
+  const hit = findSubmit([S("assign", "#n", "Jane"), step]);
+  assert.equal(hit.index, 1);
+  assert.match(hit.reason, /condition/);
+});
+
+test("stopBefore can only stop earlier", () => {
+  const steps = [S("assign", "#a", "x"), S("assign", "#b", "y"), S("click", SUBMIT), S("assertTextPresent", "body", "Thanks")];
+  const earlier = applyGuard(steps, { stopBefore: 1 });
+  assert.equal(earlier.guard.stoppedAt, 1);
+  assert.equal(earlier.steps.filter((s) => s.command === "assign").length, 1);
+  const later = applyGuard(steps, { stopBefore: 3 });
+  assert.equal(later.guard.stoppedAt, 2, "the static cut still wins");
+  assert.ok(later.notes.some((note) => /stopBefore 3 was ignored/.test(note)));
+  assert.equal(applyGuard(steps, { stopBefore: 99 }).guard.stoppedAt, 2);
+});
+
+test("a Continue button typed submit stops the run — accepted false positive", () => {
+  // Pinned on purpose: a multi-step form's "Continue" is often type=submit, and
+  // stopping there costs a shorter validation, while guessing wrong posts a lead.
+  const hit = findSubmit([S("assign", "#zip", "10001"), S("click", 'form#step-1 button[type="submit"].continue')]);
+  assert.equal(hit.index, 1);
 });
 
 test("an ordinary click is not treated as a submit", () => {
@@ -332,4 +377,145 @@ test("a private variable's value never reaches a validation report", async () =>
   );
   assert.ok(!JSON.stringify(report).includes(hidden), "not in the plan, the start URL, the guard or the outcomes");
   assert.equal(report.plan[0].value, "(private)");
+});
+
+// --- the in-browser guard, as injected and as read back ---------------------
+
+/** A three-step plan with one click in the middle, expanded as validation would. */
+const clickPlan = async () =>
+  (await expandSteps(
+    [
+      { command: "assign", target: "#email", value: "jane@example.com" },
+      { command: "click", target: [{ selector: "#go" }, { selector: "[name=go]" }], condition: "return window.ready;" },
+      { command: "assertElementPresent", target: "#done" },
+    ],
+    async () => ({ name: "", steps: [] }),
+  )).steps;
+
+/**
+ * A result step for a sent step.
+ * @param {object} sentStep
+ * @param {boolean | null} passing
+ */
+const ran = (sentStep, passing, error = "") => ({ command: sentStep.command, target: "", passing, error });
+
+test("every original step is gated on the guard", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  assert.deepEqual(sent.map((s) => s.command), ["assign", "assertElementVisible", "extractEval", "click", "assertElementPresent", "extractEval"]);
+  assert.deepEqual(map.map((m) => m.kind), ["step", "wait", "probe", "step", "step", "log"]);
+  for (const [i, step] of sent.entries()) {
+    if (map[i].kind === "log") {
+      assert.equal(step.condition, null, "the log always runs");
+      continue;
+    }
+    assert.ok(step.condition.includes(stopCondition()), `sent step ${i} is gated`);
+  }
+  assert.match(sent[3].condition, /window\.ready/, "the click keeps its own condition");
+  assert.match(sent[1].condition, /window\.ready/, "and so does its wait, or it waits for something that will not come");
+  assert.deepEqual(sent[1].authoredTarget, [{ selector: "#go" }, { selector: "[name=go]" }]);
+  assert.match(sent[2].value, /"#go","\[name=go\]"/, "the probe tries the same fallbacks");
+  assert.equal(sent[2].variableName, "giGuardProbe1");
+});
+
+test("injected steps never shift what the report calls step N", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const read = readGuardedResult(sent.map((s) => ran(s, true)), { giGuardProbe1: "clear", giGuardLog: '{"stopped":null,"blocked":[]}' }, sent, map);
+  assert.deepEqual(read.outcomes.map((o) => [o.sequence, o.command, o.status]), [
+    [0, "assign", "passed"], [1, "click", "passed"], [2, "assertElementPresent", "passed"],
+  ]);
+  assert.equal(read.runtimeStop, null);
+  assert.deepEqual(read.blockedRequests, []);
+});
+
+test("a runtime stop is reported with its reason", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, true, true, null, null, true];
+  const read = readGuardedResult(
+    sent.map((s, i) => ran(s, passing[i])),
+    { giGuardProbe1: "plan step 1: a form's submit button", giGuardLog: '{"stopped":"plan step 1: a form\'s submit button","blocked":["fetch POST https://example.com/lead"]}' },
+    sent,
+    map,
+  );
+  assert.equal(read.runtimeStop, "plan step 1: a form's submit button");
+  assert.deepEqual(read.outcomes.map((o) => o.status), ["passed", "stopped by guard", "stopped by guard"]);
+  assert.deepEqual(read.blockedRequests, ["fetch POST https://example.com/lead"]);
+});
+
+test("a click whose target never appeared fails there, not as a missing probe", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, false, null, null, null, null];
+  const read = readGuardedResult(sent.map((s, i) => ran(s, passing[i], i === 1 ? "Element not visible" : "")), {}, sent, map);
+  assert.equal(read.outcomes[1].status, "failed");
+  assert.match(read.outcomes[1].error, /target never became visible/);
+  assert.equal(read.outcomes[2].status, "not reached");
+  assert.equal(read.blockedRequests, null, "the log never ran, so nothing is known");
+});
+
+test("a step skipped by its own condition is not called unreached", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, null, null, null, true, true];
+  const read = readGuardedResult(sent.map((s, i) => ran(s, passing[i])), { giGuardLog: '{"stopped":null,"blocked":[]}' }, sent, map);
+  assert.deepEqual(read.outcomes.map((o) => o.status), ["passed", "skipped by condition", "passed"]);
+});
+
+// --- conditions in their stored shape ----------------------------------------
+
+test("a stored condition, an object with a statement, is carried into the expansion", async () => {
+  // Every condition in a real account is stored as {statement}. Read as a
+  // string it vanished, and validations ran conditional steps unconditionally.
+  const { steps } = await expandSteps(
+    [
+      { command: "click", target: "#a", condition: { statement: "return window.a;" } },
+      { command: "execute", value: "mod", condition: { statement: "return outer();" } },
+    ],
+    async () => ({ name: "Mod", steps: [{ command: "assign", target: "#b", condition: { statement: "return inner();" } }] }),
+  );
+  assert.equal(steps[0].condition, "return window.a;");
+  assert.match(steps[1].condition, /outer\(\)/);
+  assert.match(steps[1].condition, /inner\(\)/);
+});
+
+test("conditions are sent in the shape Ghost Inspector stores", async () => {
+  // Observed live: on-demand refuses a string condition with
+  // "Test.steps[0].condition should be object,null".
+  const run = await prepared({ steps: [{ command: "assign", target: "#a", value: "x" }, { command: "click", target: "#b", condition: { statement: "return 1;" } }] });
+  for (const step of run.body.steps) {
+    assert.ok(step.condition === undefined || (typeof step.condition === "object" && typeof step.condition.statement === "string"), JSON.stringify(step.condition));
+  }
+  assert.ok(run.body.steps.slice(0, -1).every((step) => step.condition), "every sent step but the closing log is gated");
+});
+
+test("a stored condition that submits is caught", async () => {
+  const { steps } = await expandSteps(
+    [{ command: "click", target: "#next", condition: { statement: "document.forms[0].requestSubmit(); return true;" } }],
+    async () => ({ name: "", steps: [] }),
+  );
+  assert.equal(findSubmit(steps).index, 0);
+});
+
+test("blocked requests come back without query strings, deduplicated and capped", async () => {
+  // Observed live: a real page's analytics produced 17 blocked POSTs whose
+  // query strings ran to kilobytes and carried page data into the report.
+  const { sent, map } = injectGuards(await clickPlan());
+  const blocked = [
+    "fetch POST https://example.com/collect?cid=1&email=jane%40example.com",
+    "fetch POST https://example.com/collect?cid=2",
+    "xhr POST /lead#frag",
+    ...Array.from({ length: 30 }, (_, i) => `sendBeacon POST https://example.com/b${i}?x=1`),
+  ];
+  const read = readGuardedResult(sent.map((s) => ran(s, true)), { giGuardLog: JSON.stringify({ stopped: null, blocked }) }, sent, map);
+  assert.equal(read.blockedRequestCount, 33);
+  assert.equal(read.blockedRequests.length, 20);
+  assert.deepEqual(read.blockedRequests.slice(0, 2), ["fetch POST https://example.com/collect (2 attempts)", "xhr POST /lead"]);
+  assert.ok(!JSON.stringify(read.blockedRequests).includes("jane"), "no query string survives");
+});
+
+test("a plan with no click still arms the tripwire before its first step", async () => {
+  const { steps } = await expandSteps(
+    [{ command: "assign", target: "#email", value: "jane@example.com" }, { command: "assign", target: "#agree", value: "true" }],
+    async () => ({ name: "", steps: [] }),
+  );
+  const { sent, map } = injectGuards(steps);
+  assert.equal(map.filter((m) => m.kind === "probe").length, 0);
+  assert.match(sent[0].condition, /HTMLFormElement\.prototype\.submit/, "the first step's own condition arms it");
 });

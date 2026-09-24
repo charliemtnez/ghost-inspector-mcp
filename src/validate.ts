@@ -30,8 +30,9 @@ import {
   type TestRecord,
 } from "./client.js";
 import { requireOrgId } from "./config.js";
-import { DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
-import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
+import { logScript, probeScript, selectorsOf, stopCondition } from "./guard-script.js";
+import { conditionStatement, DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
+import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, type Evidence } from "./results.js";
 import {
   collectVariables,
   resolveDefinition,
@@ -47,8 +48,15 @@ import {
  */
 const SUBMIT_TARGET = /type\s*=\s*["']?submit|\bsubmit\b|\bsend\b/i;
 
-/** Script bodies that can activate a control without a click step. */
-const SUBMIT_SCRIPT = /\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(/i;
+/** Script bodies that can activate a control or send data without a click step. */
+const SUBMIT_SCRIPT =
+  /\.submit\s*\(|requestSubmit\s*\(|\.click\s*\(|dispatchEvent\s*\(|\bfetch\s*\(|XMLHttpRequest|sendBeacon\s*\(|\$\.ajax\b|\$\.post\b|\baxios\b/i;
+
+/** Commands whose `value` is a script the page runs. */
+const SCRIPT_COMMANDS = new Set(["eval", "assertEval", "extractEval"]);
+
+/** In run mode, a click target that names a control: after a field is filled, it may send the form. */
+const CONTROL_TARGET = /button|input|\[type|form|role\s*=\s*["']?button/i;
 
 /** Key values that submit a focused form. */
 const SUBMIT_KEY = /^(enter|return|\\n|\\r|13)$/i;
@@ -160,7 +168,7 @@ async function expand(
 
   for (const [index, step] of steps.entries()) {
     const command = str(step["command"]);
-    const own = typeof step["condition"] === "string" ? step["condition"] : null;
+    const own = conditionStatement(step["condition"]);
     if (command !== "execute") {
       const target = step["target"];
       out.push({
@@ -231,35 +239,60 @@ export interface Guard {
  * Finds the first step that could submit a form.
  *
  * @param steps Fully expanded steps.
+ * @param mode `run` adds one rule for stored runs, which have no in-browser probe: a control clicked after an assign.
  * @returns Index and reason, or `null` when nothing looks like a submission.
  */
-export function findSubmit(steps: ExpandedStep[]): { index: number; reason: string } | null {
+export function findSubmit(
+  steps: ExpandedStep[],
+  mode: "validate" | "run" = "validate",
+): { index: number; reason: string } | null {
+  let filled = false;
   for (const [index, step] of steps.entries()) {
+    if (step.condition && SUBMIT_SCRIPT.test(step.condition)) {
+      return { index, reason: `a condition whose script can activate a control or send data, on ${step.command}` };
+    }
     if (step.command === "click" && SUBMIT_TARGET.test(step.target)) {
       return { index, reason: `click on a submit-shaped target: ${step.target}` };
     }
     if (step.command === "keypress" && SUBMIT_KEY.test(step.value.trim())) {
       return { index, reason: `keypress of ${step.value.trim()}, which submits a focused form` };
     }
-    if (
-      (step.command === "eval" || step.command === "assertEval") &&
-      SUBMIT_SCRIPT.test(step.value)
-    ) {
-      return { index, reason: `${step.command} whose script can activate a control` };
+    if (SCRIPT_COMMANDS.has(step.command) && SUBMIT_SCRIPT.test(step.value)) {
+      return { index, reason: `${step.command} whose script can activate a control or send data` };
     }
+    if (mode === "run" && filled && step.command === "click" && CONTROL_TARGET.test(step.target)) {
+      return { index, reason: `click on a control after a field was filled: ${step.target}` };
+    }
+    if (step.command === "assign") filled = true;
   }
   return null;
 }
 
 /**
- * Truncates at the first submitting step and asserts that step's target instead.
+ * Truncates at the first submitting step, or earlier at `stopBefore`, and asserts that step's target instead.
  *
  * @param steps Fully expanded steps.
- * @returns The steps that will run, and what was held back.
+ * @param options `stopBefore`: a plan index to stop at. It can only move the cut earlier.
+ * @returns The steps that will run, what was held back, and a note when stopBefore was ignored.
  */
-export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guard: Guard | null } {
-  const hit = findSubmit(steps);
-  if (!hit) return { steps, guard: null };
+export function applyGuard(
+  steps: ExpandedStep[],
+  options: { stopBefore?: number | undefined } = {},
+): { steps: ExpandedStep[]; guard: Guard | null; notes: string[] } {
+  const found = findSubmit(steps);
+  const notes: string[] = [];
+  const requested = options.stopBefore;
+  let hit = found;
+  if (requested !== undefined && requested >= 0 && requested < steps.length) {
+    if (!found || requested < found.index) {
+      hit = { index: requested, reason: `stopBefore ${requested}, requested by the caller` };
+    } else if (requested > found.index) {
+      notes.push(
+        `stopBefore ${requested} was ignored: the guard already stops at step ${found.index}, and stopBefore can only stop earlier.`,
+      );
+    }
+  }
+  if (!hit) return { steps, guard: null, notes };
 
   const kept = steps.slice(0, hit.index);
   const submitting = steps[hit.index];
@@ -286,14 +319,177 @@ export function applyGuard(steps: ExpandedStep[]): { steps: ExpandedStep[]; guar
       droppedSteps: steps.length - hit.index,
       assertedTarget: target || null,
     },
+    notes,
   };
+}
+
+/** What a sent step is: a plan step, or one the guard injected around a click. */
+export interface SentStep {
+  planIndex: number;
+  kind: "step" | "wait" | "probe" | "log";
+}
+
+/**
+ * Layers B and C: before every click, a wait on its target and a probe that can stop the run; every step gated on that stop.
+ *
+ * @param plan The steps to run, static guard already applied.
+ * @return The steps to send, and what each sent step is in plan terms.
+ */
+export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map: SentStep[] } {
+  const sent: ExpandedStep[] = [];
+  const map: SentStep[] = [];
+  const gate = stopCondition();
+  const push = (step: ExpandedStep, planIndex: number, kind: SentStep["kind"]): void => {
+    sent.push(step);
+    map.push({ planIndex, kind });
+  };
+  for (const [planIndex, step] of plan.entries()) {
+    const condition = andConditions(gate, step.condition);
+    if (step.command === "click") {
+      push({ ...step, command: "assertElementVisible", value: "", variableName: "", condition }, planIndex, "wait");
+      push(
+        {
+          ...step,
+          command: "extractEval",
+          target: "",
+          authoredTarget: "",
+          value: probeScript(selectorsOf(step.authoredTarget), planIndex),
+          variableName: `giGuardProbe${planIndex}`,
+          condition,
+          optional: false,
+        },
+        planIndex,
+        "probe",
+      );
+    }
+    push({ ...step, condition }, planIndex, "step");
+  }
+  const last = plan[plan.length - 1];
+  push(
+    {
+      command: "extractEval",
+      target: "",
+      authoredTarget: "",
+      value: logScript(),
+      variableName: "giGuardLog",
+      condition: null,
+      optional: true,
+      fromModule: null,
+      ownerId: last?.ownerId ?? "",
+      ownerName: last?.ownerName ?? "",
+      indexInOwner: -1,
+      rootIndex: last?.rootIndex ?? -1,
+    },
+    plan.length,
+    "log",
+  );
+  return { sent, map };
+}
+
+/**
+ * Folds a guarded run's result back onto the plan, so step N means the same thing as in `plan`.
+ *
+ * @param resultSteps Steps of the result, parallel to `sent`.
+ * @param extractions The result's extractions.
+ * @param sent The steps that were sent.
+ * @param map What each sent step is.
+ * @return One outcome per plan step, the runtime stop, and the requests the tripwire blocked.
+ */
+export function readGuardedResult(
+  resultSteps: Array<Record<string, unknown>>,
+  extractions: Record<string, unknown>,
+  sent: ExpandedStep[],
+  map: SentStep[],
+): {
+  outcomes: StepOutcome[];
+  runtimeStop: string | null;
+  blockedRequests: string[] | null;
+  blockedRequestCount: number | null;
+} {
+  const raw = outcomesOf(resultSteps, sent);
+  const stopEntry = map.findIndex(
+    (entry) => entry.kind === "probe" && typeof extractions[`giGuardProbe${entry.planIndex}`] === "string" &&
+      extractions[`giGuardProbe${entry.planIndex}`] !== "clear",
+  );
+  const runtimeStop = stopEntry >= 0 ? String(extractions[`giGuardProbe${map[stopEntry]?.planIndex}`]) : null;
+  const failedAt = raw.findIndex((outcome) => outcome.status === "failed");
+  const lastRan = raw.map((outcome) => outcome.status !== "not reached").lastIndexOf(true);
+
+  const outcomes: StepOutcome[] = [];
+  for (const [i, outcome] of raw.entries()) {
+    const entry = map[i];
+    if (!entry || entry.kind === "log") continue;
+    if (entry.kind === "wait" && outcome.status === "failed") {
+      outcomes[entry.planIndex] = {
+        ...outcome,
+        command: sent[i + 2]?.command ?? "click",
+        error: `target never became visible: ${outcome.error ?? ""}`.trim(),
+      };
+      continue;
+    }
+    if (entry.kind === "probe" && outcome.status === "failed") {
+      outcomes[entry.planIndex] = { ...outcome, command: "click", error: `the guard's probe could not run: ${outcome.error ?? ""}`.trim() };
+      continue;
+    }
+    if (entry.kind !== "step" || outcomes[entry.planIndex]) continue;
+    let status = outcome.status;
+    if (status === "not reached") {
+      if (stopEntry >= 0 && i > stopEntry) status = "stopped by guard";
+      else if (failedAt >= 0 && i > failedAt) status = "not reached";
+      else if (i < lastRan) status = "skipped by condition";
+    }
+    outcomes[entry.planIndex] = { ...outcome, sequence: entry.planIndex, status };
+  }
+
+  let blocked: string[] | null = null;
+  const log = extractions["giGuardLog"];
+  if (typeof log === "string") {
+    try {
+      const parsed = JSON.parse(log) as { blocked?: unknown };
+      blocked = Array.isArray(parsed.blocked) ? parsed.blocked.map(String) : [];
+    } catch {
+      blocked = null;
+    }
+  }
+  const summary = blocked === null ? null : summarizeBlocked(blocked);
+  for (const [i, entry] of map.entries()) {
+    const step = sent[i];
+    if (entry.kind !== "step" || outcomes[entry.planIndex] || !step) continue;
+    outcomes[entry.planIndex] = { sequence: entry.planIndex, command: step.command, target: step.target, status: "not reached" };
+  }
+  return {
+    outcomes,
+    runtimeStop,
+    blockedRequests: summary?.entries ?? null,
+    blockedRequestCount: summary?.count ?? null,
+  };
+}
+
+const BLOCKED_CAP = 20;
+
+/**
+ * The tripwire's log for a report: query strings and fragments dropped, repeats folded, at most 20 lines.
+ *
+ * @param blocked Entries as the log recorded them: "<kind> <METHOD> <url>".
+ * @return The lines to show, and how many attempts there were in all.
+ */
+function summarizeBlocked(blocked: string[]): { entries: string[]; count: number } {
+  const counts = new Map<string, number>();
+  for (const entry of blocked) {
+    const key = entry.replace(/[?#]\S*/, "");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const entries = [...counts]
+    .slice(0, BLOCKED_CAP)
+    .map(([key, times]) => (times > 1 ? `${key} (${times} attempts)` : key));
+  return { entries, count: blocked.length };
 }
 
 export interface StepOutcome {
   sequence: number;
   command: string;
   target: string;
-  status: "passed" | "failed" | "not reached";
+  status: "passed" | "failed" | "not reached" | "skipped by condition" | "stopped by guard";
   /** Cut to 200 characters; `valueLength` is set when it was. */
   value?: string;
   valueLength?: number;
@@ -342,7 +538,7 @@ export interface ValidationReport {
   /** Set when the run was refused before anything was sent. */
   refusedBecause?: string;
   variables: { resolved: string[]; runtime: string[]; unresolved: Array<{ name: string; where: string }> };
-  guard: Guard | null;
+  guard: ReportGuard;
   /** Exactly what would run, or did. Readable without executing anything. */
   plan: PlannedStep[];
   /** False for a dry run or a refusal: nothing was sent to Ghost Inspector. */
@@ -356,6 +552,9 @@ export interface ValidationReport {
     stepsPassed: number;
     stepsFailed: number;
     stepsNotReached: number;
+    stepsSkippedByCondition: number;
+    stepsStoppedByGuard: number;
+    /** Plan steps that ran; the guard's own steps are not counted. */
     stepsExecuted: number;
   } | null;
   /** Settings the result says it ran with that differ from what was asked. */
@@ -365,6 +564,23 @@ export interface ValidationReport {
   /** Screenshots, video, URLs visited, extractions and console output. Null when nothing ran. */
   evidence: Evidence | null;
   notes: string[];
+}
+
+/** All three guard layers as one report. */
+export interface ReportGuard {
+  /** Layer A, the static cut: the plan step it replaced, or null when nothing looked like a submit. */
+  stoppedAt: number | null;
+  reason: string | null;
+  droppedSteps: number;
+  assertedTarget: string | null;
+  /** Layer B: clicks probed in the browser before they run. */
+  probedClicks: number;
+  /** Layer B: why the probe stopped the run, or null when it did not (or nothing ran). */
+  runtimeStop: string | null;
+  /** Layer C: requests the tripwire blocked, without query strings, repeats folded, at most 20; null when its log step never ran. */
+  blockedRequests: string[] | null;
+  /** Every blocked attempt, including those past the cap. */
+  blockedRequestCount: number | null;
 }
 
 export interface ValidateOptions {
@@ -382,6 +598,10 @@ export interface ValidateOptions {
   viewport?: string | undefined;
   /** Override, e.g. "chrome". Defaults to the test's, then the suite's. */
   browser?: string | undefined;
+  /** Stop before this plan step. Only ever earlier than the guard's own cut. */
+  stopBefore?: number | undefined;
+  /** Keep `plan` after a run and every console entry, not only the first 20 errors. */
+  verbose?: boolean | undefined;
   /**
    * Report what would run and stop. Nothing is sent to Ghost Inspector, so no
    * browser starts and no page is loaded — the only way to inspect the guard's
@@ -480,12 +700,16 @@ export interface RunInputs {
   viewport?: string | undefined;
   browser?: string | undefined;
   variables?: Record<string, string> | undefined;
+  stopBefore?: number | undefined;
 }
 
 export interface PreparedRun {
   resolution: Resolution;
   vars: Map<string, VariableValue>;
   toRun: ExpandedStep[];
+  /** What is actually sent: `toRun` with the in-browser guard injected around every click. */
+  sent: ExpandedStep[];
+  map: SentStep[];
   guard: Guard | null;
   settings: { values: Record<string, unknown>; sources: Record<string, SettingSource> };
   /** The on-demand body, or null when the run must be refused. */
@@ -509,10 +733,11 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
     caller: inputs.variables,
   });
   const resolution = resolveDefinition(inputs.startUrl, inputs.expansion.steps, vars);
-  const { steps: toRun, guard } = applyGuard(resolution.steps);
+  const { steps: toRun, guard, notes: guardNotes } = applyGuard(resolution.steps, { stopBefore: inputs.stopBefore });
+  const { sent, map } = injectGuards(toRun);
   const settings = settingsFor(inputs.test, inputs.suite, { viewport: inputs.viewport, browser: inputs.browser });
 
-  const notes: string[] = [];
+  const notes: string[] = [...guardNotes];
   const auth = str(inputs.test?.["httpAuthUsername"]) || str(inputs.suite?.["httpAuthUsername"]);
   if (auth) {
     notes.push(
@@ -540,18 +765,18 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
       : {
           name: `[validation] ${inputs.name}`,
           startUrl: resolution.startUrl,
-          steps: toRun.map((step) => ({
+          steps: sent.map((step) => ({
             command: step.command,
             target: step.authoredTarget,
             value: step.value,
             ...(step.variableName ? { variableName: step.variableName } : {}),
-            ...(step.condition ? { condition: step.condition } : {}),
+            ...(step.condition ? { condition: { statement: step.condition } } : {}),
             ...(step.optional ? { optional: true } : {}),
           })),
           ...settings.values,
         };
 
-  return { resolution, vars, toRun, guard, settings, body, params, unresolved, refusal, notes };
+  return { resolution, vars, toRun, sent, map, guard, settings, body, params, unresolved, refusal, notes };
 }
 
 /**
@@ -667,6 +892,38 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
   return maskPrivate(report, vars);
 }
 
+export interface PlanReport {
+  ranAs: ValidationReport["ranAs"];
+  expansion: ValidationReport["expansion"];
+  variables: ValidationReport["variables"];
+  guard: ReportGuard;
+  plan: PlannedStep[];
+  /** Why gi_validate_test would refuse this run before sending anything, or null. */
+  wouldRefuse: string | null;
+  notes: string[];
+}
+
+/**
+ * What a validation would run, after modules, variables and all three guard layers, without sending anything.
+ *
+ * @param options As for validateTest; `dryRun` and `verbose` do not apply.
+ * @return The plan, the guard's decisions and whether the run would be refused.
+ * @throws {GhostInspectorError} when reading a definition fails.
+ */
+export async function planTest(options: Omit<ValidateOptions, "dryRun" | "verbose">): Promise<PlanReport> {
+  const { report, vars, refusal } = await runValidation({ ...options, dryRun: true });
+  const { ranAs, expansion, variables, guard, plan, notes } = maskPrivate(report, vars);
+  return {
+    ranAs,
+    expansion,
+    variables,
+    guard,
+    plan,
+    wouldRefuse: refusal === null ? null : maskPrivate(refusal, vars),
+    notes: notes.filter((note) => !note.startsWith("DRY RUN") && note !== refusal),
+  };
+}
+
 /**
  * validateTest's body, returning the variables alongside so every path can be masked in one place.
  *
@@ -675,7 +932,7 @@ export async function validateTest(options: ValidateOptions): Promise<Validation
  */
 async function runValidation(
   options: ValidateOptions,
-): Promise<{ report: ValidationReport; vars: ReadonlyMap<string, VariableValue> }> {
+): Promise<{ report: ValidationReport; vars: ReadonlyMap<string, VariableValue>; refusal: string | null }> {
   if ((options.testId && options.definition) || (!options.testId && !options.definition)) {
     throw new Error(
       "Pass exactly one of testId (validate an existing test) or definition (validate an ad-hoc definition).",
@@ -738,6 +995,7 @@ async function runValidation(
     viewport: options.viewport,
     browser: options.browser,
     variables: options.variables,
+    stopBefore: options.stopBefore,
   });
   const { toRun, guard, settings, resolution } = prepared;
 
@@ -781,7 +1039,16 @@ async function runValidation(
       runtime: resolution.runtime,
       unresolved: resolution.unresolved,
     },
-    guard,
+    guard: {
+      stoppedAt: guard?.stoppedAt ?? null,
+      reason: guard?.reason ?? null,
+      droppedSteps: guard?.droppedSteps ?? 0,
+      assertedTarget: guard?.assertedTarget ?? null,
+      probedClicks: prepared.map.filter((entry) => entry.kind === "probe").length,
+      runtimeStop: null,
+      blockedRequests: null,
+      blockedRequestCount: null,
+    } as ReportGuard,
     plan,
   };
 
@@ -797,9 +1064,17 @@ async function runValidation(
       );
     } else {
       notes.push(
-        "No step looks like a form submission, so the definition runs to the end. The detection is a heuristic over click targets, Enter keypresses and script bodies — if this test submits by some other means, a real submission can happen.",
+        "No step looks like a form submission to the static check, which reads click targets, Enter keypresses, and scripts and conditions.",
       );
     }
+    if (shared.guard.probedClicks > 0) {
+      notes.push(
+        `Each of the ${shared.guard.probedClicks} click(s) is probed in the browser first: the run stops if the element is a form's submit control, a non-field control inside a form, or cannot be resolved from the top document.`,
+      );
+    }
+    notes.push(
+      "Before every step, on every page, a tripwire blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them in guard.blockedRequests. It cannot see a script that saved window.fetch before the page's first step ran, or data sent by a GET (a pixel or a navigation).",
+    );
     if (expansion.modules.length > 0) {
       notes.push(
         `${expansion.modules.length} module(s) were inlined before guarding, ${expansion.depth} level(s) deep. Guarding the definition as written would have missed a submit hidden inside a module.`,
@@ -843,7 +1118,7 @@ async function runValidation(
       executed: false,
       notes: [prepared.refusal, ...guardNotes()],
     };
-    return { report, vars };
+    return { report, vars, refusal: prepared.refusal };
   }
 
   if (options.dryRun) {
@@ -854,10 +1129,10 @@ async function runValidation(
       notes: [
         "DRY RUN: nothing was sent to Ghost Inspector. No browser started, no page loaded, no request left this machine beyond reading the definitions.",
         ...guardNotes(),
-        "`plan` is exactly what a real run would execute, in order.",
+        "`plan` is exactly what a real run would execute, in order. dryRun is deprecated: gi_plan_test does the same and is read-only.",
       ],
     };
-    return { report, vars };
+    return { report, vars, refusal: null };
   }
 
   const runOrg = requireOrgId();
@@ -870,11 +1145,35 @@ async function runValidation(
   // would invent one; a browser run has been observed taking 99s.
   const result = await pollResult(pending._id, { timeoutMs: 300_000, intervalMs: 5_000 });
 
-  const stepOutcomes = outcomesOf(result.steps ?? [], toRun);
+  const guarded = readGuardedResult(
+    result.steps ?? [],
+    (result["extractions"] ?? {}) as Record<string, unknown>,
+    prepared.sent,
+    prepared.map,
+  );
+  const stepOutcomes = guarded.outcomes;
+  shared.guard.runtimeStop = guarded.runtimeStop;
+  shared.guard.blockedRequests = guarded.blockedRequests;
+  shared.guard.blockedRequestCount = guarded.blockedRequestCount;
+  const guardRun: string[] = [];
+  if (guarded.runtimeStop) {
+    guardRun.push(
+      `🔴 The in-browser guard stopped the run (${guarded.runtimeStop}). Every step after it was skipped, so a green result proves only the steps before it.`,
+    );
+  }
+  if (guarded.blockedRequests && guarded.blockedRequests.length > 0) {
+    guardRun.push(
+      `🔴 The tripwire blocked ${guarded.blockedRequestCount} attempt(s) to send data; see guard.blockedRequests. The page's own analytics and form scripts are blocked too, so a step that depends on one of those calls can fail here and pass in a real run.`,
+    );
+  }
+  if (guarded.blockedRequests === null) {
+    guardRun.push("The guard's closing log did not run, because the run ended early, so what it blocked is unknown.");
+  }
   const drift = settingsCheck(settings.values, result);
   const notes: string[] = [
     "Nothing was saved: on-demand execution runs a definition and discards it. The test in the account is untouched.",
     ...guardNotes(),
+    ...guardRun,
     ...(toRun.some((step) => step.command === "eval") ? [EVAL_VALUE_NOTE] : []),
     ...drift.map(
       (d) => `⚠️ Asked to run with ${d.setting} ${JSON.stringify(d.requested)}, but the result reports ${JSON.stringify(d.reported)}.`,
@@ -892,13 +1191,19 @@ async function runValidation(
       stepsPassed: stepOutcomes.filter((s) => s.status === "passed").length,
       stepsFailed: stepOutcomes.filter((s) => s.status === "failed").length,
       stepsNotReached: stepOutcomes.filter((s) => s.status === "not reached").length,
-      stepsExecuted: stepsExecuted(result.steps ?? []),
+      stepsSkippedByCondition: stepOutcomes.filter((s) => s.status === "skipped by condition").length,
+      stepsStoppedByGuard: stepOutcomes.filter((s) => s.status === "stopped by guard").length,
+      stepsExecuted: stepOutcomes.filter((s) => s.status === "passed" || s.status === "failed").length,
     },
     settingsCheck: drift,
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,
     steps: stepOutcomes,
-    evidence: evidenceOf(result, false),
+    evidence: evidenceOf(result, options.verbose === true),
     notes,
   };
-  return { report, vars };
+  if (options.verbose !== true) {
+    report.plan = [];
+    notes.push("`plan` is omitted after a run, since `steps` covers the same ground; pass verbose:true for it and every console entry.");
+  }
+  return { report, vars, refusal: null };
 }

@@ -47,7 +47,7 @@ import {
   type SuiteRecord,
   type TestRecord,
 } from "./client.js";
-import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { collectChainIds, conditionStatement, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
 import { backupDir } from "./config.js";
 import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
@@ -70,7 +70,7 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
     target: Array.isArray(target) ? JSON.stringify(target) : text(target),
     value: text(step["value"]),
     variableName: text(step["variableName"]),
-    condition: text(step["condition"]) === "" ? null : text(step["condition"]),
+    condition: conditionStatement(step["condition"]),
     optional: step["optional"] === true,
     sequence: typeof step["sequence"] === "number" ? step["sequence"] : null,
   };
@@ -84,10 +84,26 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
  */
 export function buildUpdateBody(options: Pick<UpdateOptions, "steps" | "name" | "startUrl">): UpdateBody {
   const body: UpdateBody = {};
-  if (options.steps !== undefined) body.steps = options.steps.map((step, i) => ({ ...step, sequence: i }));
+  if (options.steps !== undefined) body.steps = options.steps.map((step, i) => storedShape(step, i));
   if (options.name !== undefined) body.name = options.name;
   if (options.startUrl !== undefined) body.startUrl = options.startUrl;
   return body;
+}
+
+/**
+ * A step as Ghost Inspector stores it: its position as `sequence`, and a condition as {statement}.
+ *
+ * @param step The step as the caller sent it.
+ * @param index Its position in the list.
+ * @return The step to send.
+ */
+function storedShape(step: Record<string, unknown>, index: number): Record<string, unknown> {
+  const shaped: Record<string, unknown> = { ...step, sequence: index };
+  if (typeof step["condition"] === "string") {
+    const statement = conditionStatement(step["condition"]);
+    shaped["condition"] = statement === null ? null : { statement };
+  }
+  return shaped;
 }
 
 export interface UpdateBody {

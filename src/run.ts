@@ -91,7 +91,7 @@ export function assessSubmit(
   modulesInlined: number,
   truncated: boolean,
 ): SubmitAssessment {
-  const hit = findSubmit(expanded as Parameters<typeof findSubmit>[0]);
+  const hit = findSubmit(expanded as Parameters<typeof findSubmit>[0], "run");
   if (hit) {
     return {
       submits: true,
