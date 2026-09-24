@@ -18,6 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { redact, runsAllowed, writesAllowed } from "./config.js";
+import { stripCredentials } from "./redact-record.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
 import { getTest } from "./detail.js";
@@ -73,10 +74,10 @@ const server = new McpServer(
   },
 );
 
-/** Wraps a handler so failures come back as readable, key-free text. */
+/** Wraps a handler so results come back credential-free and failures as readable, key-free text. */
 async function safeText(run: () => Promise<unknown>) {
   try {
-    const value = await run();
+    const value = stripCredentials(await run());
     return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

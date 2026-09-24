@@ -45,6 +45,7 @@ import {
   type TestRecord,
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
+import { isCredentialKey, stripCredentials } from "./redact-record.js";
 
 /** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
 const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "sequence"] as const;
@@ -205,7 +206,8 @@ export function diffUntouched(
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (ignore.has(key)) continue;
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
-      out.push({ field: key, sent: "(not sent)", stored: after[key] });
+      const stored = isCredentialKey(key) ? "(redacted)" : stripCredentials(after[key]);
+      out.push({ field: key, sent: "(not sent)", stored });
     }
   }
   return out;
@@ -217,7 +219,7 @@ export interface UpdateResult {
   /** The record's current `dateUpdated`: the `expectedDateUpdated` of the next edit. */
   dateUpdated: string;
   staleness: StalenessVerdict;
-  /** 🔴 The complete prior definition. There is no version history — this is the rollback. */
+  /** 🔴 The complete prior definition, credentials removed. There is no version history — this is the rollback. */
   backup: TestRecord;
   sentFields: string[];
   verification: {
@@ -261,7 +263,7 @@ export function refusedResult(context: WriteContext, why: string, notes: string[
     refusedBecause: why,
     dateUpdated: String(context.before.dateUpdated ?? ""),
     staleness: context.staleness,
-    backup: context.before,
+    backup: stripCredentials(context.before),
     sentFields: context.sentFields,
     verification: null,
     notes,
@@ -318,7 +320,7 @@ export function appliedResult(
     applied: true,
     dateUpdated,
     staleness,
-    backup: before,
+    backup: stripCredentials(before),
     sentFields,
     verification: {
       stepsMatch: stepDiffs.length === 0,

@@ -20,6 +20,7 @@ import {
   diffUntouched,
   refusedResult,
 } from "../dist/writes.js";
+import { stripCredentials } from "../dist/redact-record.js";
 
 const iso = (s) => new Date(Date.parse(s)).toISOString();
 const RUN = iso("2026-08-01T12:00:00Z");
@@ -224,4 +225,29 @@ test("a refused write hands back the token it was refused against", () => {
   const result = refusedResult(context(subject()), "concurrency token mismatch", []);
   assert.equal(result.applied, false);
   assert.equal(result.dateUpdated, BEFORE);
+});
+
+test("a stored basic-auth password never reaches a response", () => {
+  const planted = "fixture-basic-auth-value";
+  const before = subject({
+    httpAuthUsername: "jane", httpAuthPassword: planted, steps: [],
+    suite: { _id: "s", name: "suite", httpAuthPassword: planted },
+  });
+  const after = { ...before, dateUpdated: AFTER, httpAuthPassword: `${planted}-rotated` };
+  const applied = appliedResult(context(before), buildUpdateBody({ steps: [] }), after);
+  const refused = refusedResult(context(before), "concurrency token mismatch", []);
+  for (const result of [applied, refused]) {
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(planted), "no password, current or rotated, in any response");
+    assert.ok(!text.includes("httpAuthUsername"), "the username goes with it");
+  }
+  const change = applied.verification.unexpectedChanges.find((d) => d.field === "httpAuthPassword");
+  assert.ok(change, "a credential that moved is still reported as moved");
+});
+
+test("credential-shaped keys are stripped at any depth, everything else kept", () => {
+  const clean = stripCredentials({
+    name: "n", apiKey: "k", nested: [{ clientSecret: "s", accessToken: "t", target: "#a" }],
+  });
+  assert.deepEqual(clean, { name: "n", nested: [{ target: "#a" }] });
 });
