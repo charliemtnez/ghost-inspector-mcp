@@ -30,8 +30,9 @@ import {
   type TestRecord,
 } from "./client.js";
 import { requireOrgId } from "./config.js";
+import { logScript, probeScript, selectorsOf, stopCondition } from "./guard-script.js";
 import { DOCUMENTED_MAX_DEPTH, executedIds, type Steps } from "./graph.js";
-import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, stepsExecuted, type Evidence } from "./results.js";
+import { EVAL_VALUE_NOTE, evidenceOf, executionTimeMs, type Evidence } from "./results.js";
 import {
   collectVariables,
   resolveDefinition,
@@ -322,11 +323,142 @@ export function applyGuard(
   };
 }
 
+/** What a sent step is: a plan step, or one the guard injected around a click. */
+export interface SentStep {
+  planIndex: number;
+  kind: "step" | "wait" | "probe" | "log";
+}
+
+/**
+ * Layers B and C: before every click, a wait on its target and a probe that can stop the run; every step gated on that stop.
+ *
+ * @param plan The steps to run, static guard already applied.
+ * @return The steps to send, and what each sent step is in plan terms.
+ */
+export function injectGuards(plan: ExpandedStep[]): { sent: ExpandedStep[]; map: SentStep[] } {
+  const sent: ExpandedStep[] = [];
+  const map: SentStep[] = [];
+  const gate = stopCondition();
+  const push = (step: ExpandedStep, planIndex: number, kind: SentStep["kind"]): void => {
+    sent.push(step);
+    map.push({ planIndex, kind });
+  };
+  for (const [planIndex, step] of plan.entries()) {
+    const condition = andConditions(gate, step.condition);
+    if (step.command === "click") {
+      push({ ...step, command: "assertElementVisible", value: "", variableName: "", condition }, planIndex, "wait");
+      push(
+        {
+          ...step,
+          command: "extractEval",
+          target: "",
+          authoredTarget: "",
+          value: probeScript(selectorsOf(step.authoredTarget), planIndex),
+          variableName: `giGuardProbe${planIndex}`,
+          condition,
+          optional: false,
+        },
+        planIndex,
+        "probe",
+      );
+    }
+    push({ ...step, condition }, planIndex, "step");
+  }
+  const last = plan[plan.length - 1];
+  push(
+    {
+      command: "extractEval",
+      target: "",
+      authoredTarget: "",
+      value: logScript(),
+      variableName: "giGuardLog",
+      condition: null,
+      optional: true,
+      fromModule: null,
+      ownerId: last?.ownerId ?? "",
+      ownerName: last?.ownerName ?? "",
+      indexInOwner: -1,
+      rootIndex: last?.rootIndex ?? -1,
+    },
+    plan.length,
+    "log",
+  );
+  return { sent, map };
+}
+
+/**
+ * Folds a guarded run's result back onto the plan, so step N means the same thing as in `plan`.
+ *
+ * @param resultSteps Steps of the result, parallel to `sent`.
+ * @param extractions The result's extractions.
+ * @param sent The steps that were sent.
+ * @param map What each sent step is.
+ * @return One outcome per plan step, the runtime stop, and the requests the tripwire blocked.
+ */
+export function readGuardedResult(
+  resultSteps: Array<Record<string, unknown>>,
+  extractions: Record<string, unknown>,
+  sent: ExpandedStep[],
+  map: SentStep[],
+): { outcomes: StepOutcome[]; runtimeStop: string | null; blockedRequests: string[] | null } {
+  const raw = outcomesOf(resultSteps, sent);
+  const stopEntry = map.findIndex(
+    (entry) => entry.kind === "probe" && typeof extractions[`giGuardProbe${entry.planIndex}`] === "string" &&
+      extractions[`giGuardProbe${entry.planIndex}`] !== "clear",
+  );
+  const runtimeStop = stopEntry >= 0 ? String(extractions[`giGuardProbe${map[stopEntry]?.planIndex}`]) : null;
+  const failedAt = raw.findIndex((outcome) => outcome.status === "failed");
+  const lastRan = raw.map((outcome) => outcome.status !== "not reached").lastIndexOf(true);
+
+  const outcomes: StepOutcome[] = [];
+  for (const [i, outcome] of raw.entries()) {
+    const entry = map[i];
+    if (!entry || entry.kind === "log") continue;
+    if (entry.kind === "wait" && outcome.status === "failed") {
+      outcomes[entry.planIndex] = {
+        ...outcome,
+        command: sent[i + 2]?.command ?? "click",
+        error: `target never became visible: ${outcome.error ?? ""}`.trim(),
+      };
+      continue;
+    }
+    if (entry.kind === "probe" && outcome.status === "failed") {
+      outcomes[entry.planIndex] = { ...outcome, command: "click", error: `the guard's probe could not run: ${outcome.error ?? ""}`.trim() };
+      continue;
+    }
+    if (entry.kind !== "step" || outcomes[entry.planIndex]) continue;
+    let status = outcome.status;
+    if (status === "not reached") {
+      if (stopEntry >= 0 && i > stopEntry) status = "stopped by guard";
+      else if (failedAt >= 0 && i > failedAt) status = "not reached";
+      else if (i < lastRan) status = "skipped by condition";
+    }
+    outcomes[entry.planIndex] = { ...outcome, sequence: entry.planIndex, status };
+  }
+
+  let blockedRequests: string[] | null = null;
+  const log = extractions["giGuardLog"];
+  if (typeof log === "string") {
+    try {
+      const parsed = JSON.parse(log) as { blocked?: unknown };
+      blockedRequests = Array.isArray(parsed.blocked) ? parsed.blocked.map(String) : [];
+    } catch {
+      blockedRequests = null;
+    }
+  }
+  for (const [i, entry] of map.entries()) {
+    const step = sent[i];
+    if (entry.kind !== "step" || outcomes[entry.planIndex] || !step) continue;
+    outcomes[entry.planIndex] = { sequence: entry.planIndex, command: step.command, target: step.target, status: "not reached" };
+  }
+  return { outcomes, runtimeStop, blockedRequests };
+}
+
 export interface StepOutcome {
   sequence: number;
   command: string;
   target: string;
-  status: "passed" | "failed" | "not reached";
+  status: "passed" | "failed" | "not reached" | "skipped by condition" | "stopped by guard";
   /** Cut to 200 characters; `valueLength` is set when it was. */
   value?: string;
   valueLength?: number;
@@ -375,7 +507,7 @@ export interface ValidationReport {
   /** Set when the run was refused before anything was sent. */
   refusedBecause?: string;
   variables: { resolved: string[]; runtime: string[]; unresolved: Array<{ name: string; where: string }> };
-  guard: Guard | null;
+  guard: ReportGuard;
   /** Exactly what would run, or did. Readable without executing anything. */
   plan: PlannedStep[];
   /** False for a dry run or a refusal: nothing was sent to Ghost Inspector. */
@@ -389,6 +521,9 @@ export interface ValidationReport {
     stepsPassed: number;
     stepsFailed: number;
     stepsNotReached: number;
+    stepsSkippedByCondition: number;
+    stepsStoppedByGuard: number;
+    /** Plan steps that ran; the guard's own steps are not counted. */
     stepsExecuted: number;
   } | null;
   /** Settings the result says it ran with that differ from what was asked. */
@@ -398,6 +533,21 @@ export interface ValidationReport {
   /** Screenshots, video, URLs visited, extractions and console output. Null when nothing ran. */
   evidence: Evidence | null;
   notes: string[];
+}
+
+/** All three guard layers as one report. */
+export interface ReportGuard {
+  /** Layer A, the static cut: the plan step it replaced, or null when nothing looked like a submit. */
+  stoppedAt: number | null;
+  reason: string | null;
+  droppedSteps: number;
+  assertedTarget: string | null;
+  /** Layer B: clicks probed in the browser before they run. */
+  probedClicks: number;
+  /** Layer B: why the probe stopped the run, or null when it did not (or nothing ran). */
+  runtimeStop: string | null;
+  /** Layer C: requests the tripwire blocked, or null when its log step never ran. */
+  blockedRequests: string[] | null;
 }
 
 export interface ValidateOptions {
@@ -522,6 +672,9 @@ export interface PreparedRun {
   resolution: Resolution;
   vars: Map<string, VariableValue>;
   toRun: ExpandedStep[];
+  /** What is actually sent: `toRun` with the in-browser guard injected around every click. */
+  sent: ExpandedStep[];
+  map: SentStep[];
   guard: Guard | null;
   settings: { values: Record<string, unknown>; sources: Record<string, SettingSource> };
   /** The on-demand body, or null when the run must be refused. */
@@ -546,6 +699,7 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
   });
   const resolution = resolveDefinition(inputs.startUrl, inputs.expansion.steps, vars);
   const { steps: toRun, guard, notes: guardNotes } = applyGuard(resolution.steps, { stopBefore: inputs.stopBefore });
+  const { sent, map } = injectGuards(toRun);
   const settings = settingsFor(inputs.test, inputs.suite, { viewport: inputs.viewport, browser: inputs.browser });
 
   const notes: string[] = [...guardNotes];
@@ -576,7 +730,7 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
       : {
           name: `[validation] ${inputs.name}`,
           startUrl: resolution.startUrl,
-          steps: toRun.map((step) => ({
+          steps: sent.map((step) => ({
             command: step.command,
             target: step.authoredTarget,
             value: step.value,
@@ -587,7 +741,7 @@ export function prepareRun(inputs: RunInputs): PreparedRun {
           ...settings.values,
         };
 
-  return { resolution, vars, toRun, guard, settings, body, params, unresolved, refusal, notes };
+  return { resolution, vars, toRun, sent, map, guard, settings, body, params, unresolved, refusal, notes };
 }
 
 /**
@@ -818,7 +972,15 @@ async function runValidation(
       runtime: resolution.runtime,
       unresolved: resolution.unresolved,
     },
-    guard,
+    guard: {
+      stoppedAt: guard?.stoppedAt ?? null,
+      reason: guard?.reason ?? null,
+      droppedSteps: guard?.droppedSteps ?? 0,
+      assertedTarget: guard?.assertedTarget ?? null,
+      probedClicks: prepared.map.filter((entry) => entry.kind === "probe").length,
+      runtimeStop: null,
+      blockedRequests: null,
+    } as ReportGuard,
     plan,
   };
 
@@ -834,7 +996,12 @@ async function runValidation(
       );
     } else {
       notes.push(
-        "No step looks like a form submission, so the definition runs to the end. The detection is a heuristic over click targets, Enter keypresses and script bodies — if this test submits by some other means, a real submission can happen.",
+        "No step looks like a form submission to the static check, which reads click targets, Enter keypresses, and scripts and conditions.",
+      );
+    }
+    if (shared.guard.probedClicks > 0) {
+      notes.push(
+        `Each of the ${shared.guard.probedClicks} click(s) is probed in the browser first: the run stops if the element is a form's submit control, a non-field control inside a form, or cannot be resolved from the top document. A tripwire also blocks submit events, form.submit(), non-GET fetch and XHR, and sendBeacon, and reports them. It cannot see a script that saved window.fetch before the probe ran, or data sent by a GET (a pixel or a navigation).`,
       );
     }
     if (expansion.modules.length > 0) {
@@ -907,11 +1074,32 @@ async function runValidation(
   // would invent one; a browser run has been observed taking 99s.
   const result = await pollResult(pending._id, { timeoutMs: 300_000, intervalMs: 5_000 });
 
-  const stepOutcomes = outcomesOf(result.steps ?? [], toRun);
+  const guarded = readGuardedResult(
+    result.steps ?? [],
+    (result["extractions"] ?? {}) as Record<string, unknown>,
+    prepared.sent,
+    prepared.map,
+  );
+  const stepOutcomes = guarded.outcomes;
+  shared.guard.runtimeStop = guarded.runtimeStop;
+  shared.guard.blockedRequests = guarded.blockedRequests;
+  const guardRun: string[] = [];
+  if (guarded.runtimeStop) {
+    guardRun.push(
+      `🔴 The in-browser guard stopped the run (${guarded.runtimeStop}). Every step after it was skipped, so a green result proves only the steps before it.`,
+    );
+  }
+  if (guarded.blockedRequests && guarded.blockedRequests.length > 0) {
+    guardRun.push(`🔴 The tripwire blocked ${guarded.blockedRequests.length} attempt(s) to send data: ${guarded.blockedRequests.join("; ")}.`);
+  }
+  if (guarded.blockedRequests === null) {
+    guardRun.push("The guard's closing log did not run, because the run ended early, so what it blocked is unknown.");
+  }
   const drift = settingsCheck(settings.values, result);
   const notes: string[] = [
     "Nothing was saved: on-demand execution runs a definition and discards it. The test in the account is untouched.",
     ...guardNotes(),
+    ...guardRun,
     ...(toRun.some((step) => step.command === "eval") ? [EVAL_VALUE_NOTE] : []),
     ...drift.map(
       (d) => `⚠️ Asked to run with ${d.setting} ${JSON.stringify(d.requested)}, but the result reports ${JSON.stringify(d.reported)}.`,
@@ -929,7 +1117,9 @@ async function runValidation(
       stepsPassed: stepOutcomes.filter((s) => s.status === "passed").length,
       stepsFailed: stepOutcomes.filter((s) => s.status === "failed").length,
       stepsNotReached: stepOutcomes.filter((s) => s.status === "not reached").length,
-      stepsExecuted: stepsExecuted(result.steps ?? []),
+      stepsSkippedByCondition: stepOutcomes.filter((s) => s.status === "skipped by condition").length,
+      stepsStoppedByGuard: stepOutcomes.filter((s) => s.status === "stopped by guard").length,
+      stepsExecuted: stepOutcomes.filter((s) => s.status === "passed" || s.status === "failed").length,
     },
     settingsCheck: drift,
     firstFailure: stepOutcomes.find((s) => s.status === "failed") ?? null,

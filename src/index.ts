@@ -465,15 +465,30 @@ server.registerTool(
       "that a selector chain still resolves before editing a test, and to check a " +
       "definition you are authoring before saving it.\n\n" +
       "🔴 It drives a real browser against a real URL, so it is an action with " +
-      "real-world effects even though nothing is saved. Two guards apply and " +
-      "neither can be turned off. Modules are inlined first, because a test whose " +
-      "steps are just `execute` calls hides its submit inside a module and " +
-      "guarding the definition as written would miss it. Then the run is " +
-      "truncated at the first step that could submit a form, and that step is " +
-      "replaced by an assertion on the same target — so the whole chain is " +
-      "verified, including that the submit control is reachable, without ever " +
-      "activating it. There is no way to make this tool submit; that stays a " +
-      "deliberate curl.\n\n" +
+      "real-world effects even though nothing is saved. Modules are inlined " +
+      "first, because a test whose steps are just `execute` calls hides its " +
+      "submit inside a module. Then three guard layers apply, and none can be " +
+      "turned off or extended past its cut:\n" +
+      "(A) Static: the run is truncated at the first click on a submit-shaped " +
+      "target, Enter keypress, or eval/assertEval/extractEval script or step " +
+      "condition that could submit or send data (.submit(, requestSubmit(, " +
+      ".click(, dispatchEvent(, fetch(, XMLHttpRequest, sendBeacon(, $.ajax, " +
+      "$.post, axios). That step becomes an assertElementVisible on its target, " +
+      "so the chain is verified, including that the control is reachable. " +
+      "`stopBefore` can move this cut earlier, never later.\n" +
+      "(B) In the browser: before every remaining click, a wait on its target and " +
+      "a probe. The probe stops the run if the element is a form's submit " +
+      "button or input, a control inside a form that is not a field, or cannot " +
+      "be resolved from the top document; every step is gated on that stop. " +
+      "Accepted false positive: a type=submit \"Continue\" inside a form stops " +
+      "the run.\n" +
+      "(C) Tripwire: the same probe blocks submit events, form.submit(), non-GET " +
+      "fetch and XHR, and sendBeacon, and `guard.blockedRequests` lists them. " +
+      "It does not stop the run. Residual gaps: a script that saved window.fetch " +
+      "before the probe ran, and data sent by a GET (a pixel or a navigation).\n" +
+      "Step numbers in `plan`, `steps` and `guard` count plan steps; the injected " +
+      "ones never shift them. There is no way to make this tool submit; that " +
+      "stays a deliberate curl.\n\n" +
       "For an existing test the suite's configuration is replicated in the " +
       "request body — viewport, browser, user agent, region, language, delays, " +
       "failOnJavaScriptError, disableVisuals, disallowInsecureCertificates — with " +

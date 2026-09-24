@@ -9,12 +9,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { stopCondition } from "../dist/guard-script.js";
+
 import {
   andConditions,
   applyGuard,
   expandSteps,
   findSubmit,
+  injectGuards,
   maskPrivate,
+  readGuardedResult,
   outcomesOf,
   planOf,
   prepareRun,
@@ -373,4 +377,83 @@ test("a private variable's value never reaches a validation report", async () =>
   );
   assert.ok(!JSON.stringify(report).includes(hidden), "not in the plan, the start URL, the guard or the outcomes");
   assert.equal(report.plan[0].value, "(private)");
+});
+
+// --- the in-browser guard, as injected and as read back ---------------------
+
+/** A three-step plan with one click in the middle, expanded as validation would. */
+const clickPlan = async () =>
+  (await expandSteps(
+    [
+      { command: "assign", target: "#email", value: "jane@example.com" },
+      { command: "click", target: [{ selector: "#go" }, { selector: "[name=go]" }], condition: "return window.ready;" },
+      { command: "assertElementPresent", target: "#done" },
+    ],
+    async () => ({ name: "", steps: [] }),
+  )).steps;
+
+/**
+ * A result step for a sent step.
+ * @param {object} sentStep
+ * @param {boolean | null} passing
+ */
+const ran = (sentStep, passing, error = "") => ({ command: sentStep.command, target: "", passing, error });
+
+test("every original step is gated on the guard", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  assert.deepEqual(sent.map((s) => s.command), ["assign", "assertElementVisible", "extractEval", "click", "assertElementPresent", "extractEval"]);
+  assert.deepEqual(map.map((m) => m.kind), ["step", "wait", "probe", "step", "step", "log"]);
+  for (const [i, step] of sent.entries()) {
+    if (map[i].kind === "log") {
+      assert.equal(step.condition, null, "the log always runs");
+      continue;
+    }
+    assert.ok(step.condition.includes(stopCondition()), `sent step ${i} is gated`);
+  }
+  assert.match(sent[3].condition, /window\.ready/, "the click keeps its own condition");
+  assert.match(sent[1].condition, /window\.ready/, "and so does its wait, or it waits for something that will not come");
+  assert.deepEqual(sent[1].authoredTarget, [{ selector: "#go" }, { selector: "[name=go]" }]);
+  assert.match(sent[2].value, /"#go","\[name=go\]"/, "the probe tries the same fallbacks");
+  assert.equal(sent[2].variableName, "giGuardProbe1");
+});
+
+test("injected steps never shift what the report calls step N", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const read = readGuardedResult(sent.map((s) => ran(s, true)), { giGuardProbe1: "clear", giGuardLog: '{"stopped":null,"blocked":[]}' }, sent, map);
+  assert.deepEqual(read.outcomes.map((o) => [o.sequence, o.command, o.status]), [
+    [0, "assign", "passed"], [1, "click", "passed"], [2, "assertElementPresent", "passed"],
+  ]);
+  assert.equal(read.runtimeStop, null);
+  assert.deepEqual(read.blockedRequests, []);
+});
+
+test("a runtime stop is reported with its reason", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, true, true, null, null, true];
+  const read = readGuardedResult(
+    sent.map((s, i) => ran(s, passing[i])),
+    { giGuardProbe1: "plan step 1: a form's submit button", giGuardLog: '{"stopped":"plan step 1: a form\'s submit button","blocked":["fetch POST https://example.com/lead"]}' },
+    sent,
+    map,
+  );
+  assert.equal(read.runtimeStop, "plan step 1: a form's submit button");
+  assert.deepEqual(read.outcomes.map((o) => o.status), ["passed", "stopped by guard", "stopped by guard"]);
+  assert.deepEqual(read.blockedRequests, ["fetch POST https://example.com/lead"]);
+});
+
+test("a click whose target never appeared fails there, not as a missing probe", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, false, null, null, null, null];
+  const read = readGuardedResult(sent.map((s, i) => ran(s, passing[i], i === 1 ? "Element not visible" : "")), {}, sent, map);
+  assert.equal(read.outcomes[1].status, "failed");
+  assert.match(read.outcomes[1].error, /target never became visible/);
+  assert.equal(read.outcomes[2].status, "not reached");
+  assert.equal(read.blockedRequests, null, "the log never ran, so nothing is known");
+});
+
+test("a step skipped by its own condition is not called unreached", async () => {
+  const { sent, map } = injectGuards(await clickPlan());
+  const passing = [true, null, null, null, true, true];
+  const read = readGuardedResult(sent.map((s, i) => ran(s, passing[i])), { giGuardLog: '{"stopped":null,"blocked":[]}' }, sent, map);
+  assert.deepEqual(read.outcomes.map((o) => o.status), ["passed", "skipped by condition", "passed"]);
 });
