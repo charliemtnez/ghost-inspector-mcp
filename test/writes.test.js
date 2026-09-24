@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { assessStaleness, diffSteps, diffUntouched } from "../dist/writes.js";
+import { assessStaleness, buildUpdateBody, diffSteps, diffUntouched } from "../dist/writes.js";
 
 const iso = (s) => new Date(Date.parse(s)).toISOString();
 const RUN = iso("2026-08-01T12:00:00Z");
@@ -84,29 +84,44 @@ const stored = (command, target = "", value = "", over = {}) => ({
   command, target, value, variableName: "", condition: null,
   optional: false, private: false, sequence: 0, _id: "x", ...over,
 });
+/** The steps exactly as the write path sends them, positions included. */
+const sentOf = (steps) => buildUpdateBody({ steps }).steps;
+
+test("a saved step list carries its position, or every result maps to step 0", () => {
+  // Omitted, GI stores 0 on every step and each failure then maps to step 0;
+  // the caller's own value is overwritten too.
+  const body = buildUpdateBody({ steps: [{ command: "click", sequence: 7 }, { command: "assign" }, { command: "click" }] });
+  assert.deepEqual(body.steps.map((step) => step.sequence), [0, 1, 2]);
+});
+
+test("a stored sequence that is not the index is reported as a failed write", () => {
+  const sent = sentOf([{ command: "click", target: "#a" }, { command: "click", target: "#b" }]);
+  const d = diffSteps(sent, [stored("click", "#a"), stored("click", "#b")]);
+  assert.deepEqual(d.map((x) => x.field), ["steps[1].sequence"]);
+});
 
 test("identical steps produce no difference", () => {
-  const sent = [{ command: "click", target: "#a" }];
+  const sent = sentOf([{ command: "click", target: "#a" }]);
   assert.equal(diffSteps(sent, [stored("click", "#a")]).length, 0);
 });
 
 test("Ghost Inspector's own defaults are not reported as differences", () => {
-  const sent = [
+  const sent = sentOf([
     { command: "assertElementPresent", target: "body" },
     { command: "assertEval", value: "return true;" },
     { command: "pause", value: "100" },
-  ];
+  ]);
   const back = [
     stored("assertElementPresent", "body"),
-    stored("assertEval", "", "return true;"),
-    stored("pause", "", "100"),
+    stored("assertEval", "", "return true;", { sequence: 1 }),
+    stored("pause", "", "100", { sequence: 2 }),
   ];
   assert.equal(diffSteps(sent, back).length, 0, "these three produced phantom diffs before");
 });
 
 test("presentation fields are ignored", () => {
-  const sent = [{ command: "click", target: "#a", _id: "MINE", sequence: 9 }];
-  assert.equal(diffSteps(sent, [stored("click", "#a", "", { _id: "THEIRS", sequence: 0 })]).length, 0);
+  const sent = sentOf([{ command: "click", target: "#a", _id: "MINE" }]);
+  assert.equal(diffSteps(sent, [stored("click", "#a", "", { _id: "THEIRS" })]).length, 0);
 });
 
 test("a real difference still surfaces", () => {
@@ -129,7 +144,7 @@ test("a length mismatch is reported", () => {
 
 test("an array of fallback selectors compares stably", () => {
   const target = [{ selector: "#a" }, { selector: "#b" }];
-  const sent = [{ command: "click", target }];
+  const sent = sentOf([{ command: "click", target }]);
   const back = [stored("click", "", "", { target: JSON.stringify(target) })];
   assert.equal(diffSteps(sent, back).length, 0);
 });

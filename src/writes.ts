@@ -46,8 +46,8 @@ import {
 } from "./client.js";
 import { collectChainIds, pool, REQUEST_CONCURRENCY, type Steps } from "./graph.js";
 
-/** Step fields that define behaviour. Anything else is presentation. */
-const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional"] as const;
+/** Step fields that define behaviour, `sequence` included: results copy it as their only map back. */
+const STEP_FIELDS = ["command", "target", "value", "variableName", "condition", "optional", "sequence"] as const;
 
 /**
  * Ghost Inspector normalises steps on write: it fills `condition: null`,
@@ -67,7 +67,23 @@ function normalizeStep(step: Record<string, unknown>): Record<string, unknown> {
     variableName: text(step["variableName"]),
     condition: text(step["condition"]) === "" ? null : text(step["condition"]),
     optional: step["optional"] === true,
+    sequence: typeof step["sequence"] === "number" ? step["sequence"] : null,
   };
+}
+
+/**
+ * The body of a test update, every step's `sequence` overwritten with its index.
+ *
+ * @param options The fields being changed.
+ * @returns The JSON body for `POST /tests/{id}/`.
+ */
+export function buildUpdateBody(
+  options: Pick<UpdateOptions, "steps" | "name">,
+): { steps?: Steps; name?: string } {
+  const body: { steps?: Steps; name?: string } = {};
+  if (options.steps !== undefined) body.steps = options.steps.map((step, i) => ({ ...step, sequence: i }));
+  if (options.name !== undefined) body.name = options.name;
+  return body;
 }
 
 export interface ChainChange {
@@ -294,15 +310,12 @@ export async function updateTest(options: UpdateOptions): Promise<UpdateResult> 
   }
 
   // Guard 3.
-  const body: Record<string, unknown> = {};
-  if (options.steps !== undefined) body["steps"] = options.steps;
-  if (options.name !== undefined) body["name"] = options.name;
+  const body = buildUpdateBody(options);
   await request<TestRecord>("POST", `tests/${options.testId}`, { body });
 
   // Guard 4. HTTP 200 does not prove the write landed as intended.
   const after = await request<TestRecord>("GET", `tests/${options.testId}`);
-  const stepDiffs =
-    options.steps !== undefined ? diffSteps(options.steps, (after.steps ?? []) as Steps) : [];
+  const stepDiffs = body.steps !== undefined ? diffSteps(body.steps, (after.steps ?? []) as Steps) : [];
   const unexpected = diffUntouched(before, after, sentFields);
 
   const notes: string[] = [
