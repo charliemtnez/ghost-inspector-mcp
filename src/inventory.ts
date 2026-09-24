@@ -41,8 +41,8 @@ export interface SuiteSummary {
   modules: number;
   /** Not a module, and `passing` is not a boolean: queued, running, or never run. */
   notRun: number;
-  /** Present only when non-empty. */
-  failingTests?: string[];
+  /** Present only when non-empty, sorted by name. */
+  failingTests?: Array<{ id: string; name: string }>;
 }
 
 export interface FolderSummary {
@@ -119,7 +119,7 @@ export function summarize(
   const summaries = new Map<string, SuiteSummary>(
     suites.map((s) => [s._id, blank(s.name ?? "(unnamed)")]),
   );
-  const failing = new Map<string, string[]>();
+  const failing = new Map<string, Array<{ id: string; name: string }>>();
   const totals = { passing: 0, failing: 0, modules: 0, notRun: 0, neverExecuted: 0 };
 
   for (const test of tests) {
@@ -140,9 +140,9 @@ export function summarize(
     summary.tests += 1;
     summary[COUNTER[state]] += 1;
     if (state === "failing" && suiteId) {
-      const names = failing.get(suiteId) ?? [];
-      names.push(test.name ?? "(unnamed)");
-      failing.set(suiteId, names);
+      const reds = failing.get(suiteId) ?? [];
+      reds.push({ id: test._id, name: test.name ?? "(unnamed)" });
+      failing.set(suiteId, reds);
     }
   }
 
@@ -150,8 +150,8 @@ export function summarize(
   const grouped = new Map<string, SuiteSummary[]>();
 
   for (const [suiteId, summary] of summaries) {
-    const names = failing.get(suiteId);
-    if (names?.length) summary.failingTests = names.sort();
+    const reds = failing.get(suiteId);
+    if (reds?.length) summary.failingTests = reds.sort((a, b) => a.name.localeCompare(b.name));
     const folder = suiteToFolder.get(suiteId) ?? UNFILED;
     grouped.set(folder, [...(grouped.get(folder) ?? []), summary]);
   }

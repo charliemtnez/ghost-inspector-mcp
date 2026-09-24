@@ -92,3 +92,11 @@ test("an unreadable definition is skipped, not counted as empty", async () => {
   assert.equal(r.scanned.unreadable, 1);
   assert.match(r.notes.join(" "), /not evidence of an empty one/);
 });
+
+test("a scoped vacuity report evaluates only the scope", () => {
+  const tests = [T({ _id: "a", name: "in" }), T({ _id: "b", name: "out" })];
+  const steps = new Map([["a", [{ command: "click", target: "#x" }]], ["b", [{ command: "click", target: "#y" }]]]);
+  const scoped = buildVacuityReport(tests, steps, 0, new Set(["a"]));
+  assert.deepEqual(scoped.assertsNothing.map((f) => f.id), ["a"]);
+  assert.equal(scoped.scanned.tests, 1);
+});

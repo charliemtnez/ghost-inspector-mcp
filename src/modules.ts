@@ -18,11 +18,13 @@ import {
   type BrokenReference,
   type Steps,
 } from "./graph.js";
+import { scopeFor, scopeNote, type ScopeFilter } from "./scope.js";
 
 /** Importer names listed per module before switching to a count. */
 const NAME_CAP = 25;
 
 export interface ModuleUsage {
+  id: string;
   name: string;
   /** Whether it is flagged import-only. A false value here is a finding. */
   importOnly: boolean;
@@ -30,8 +32,8 @@ export interface ModuleUsage {
   directImporters: number;
   /** Every test that reaches it through any chain of executes. */
   allImporters: number;
-  /** Names of the transitive importers, capped. */
-  importerNames: string[];
+  /** The transitive importers, capped, sorted by name. */
+  importers: Array<{ id: string; name: string }>;
   omittedImporters: number;
   /** Deepest chain by which it is reached. 1 means only direct. */
   maxDepth: number;
@@ -80,6 +82,18 @@ export interface UsageReport {
 }
 
 /**
+ * A usage report cut down to the modules in a scope, each keeping its account-wide blast radius.
+ *
+ * @param report The report over the whole account.
+ * @param ids The tests in scope.
+ * @return Only the modules that are in the scope or reached from a test in it.
+ */
+export function scopeUsage(report: UsageReport, ids: ReadonlySet<string>): UsageReport {
+  const modules = report.modules.filter((m) => ids.has(m.id) || m.importers.some((importer) => ids.has(importer.id)));
+  return { ...report, modules };
+}
+
+/**
  * Builds the report from already-fetched data. No network access, so it can be
  * exercised against hand-built fixtures.
  *
@@ -99,15 +113,18 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
       // Reaching itself means the chain loops. Keep that as a flag and drop it
       // from the importer set, so a cycle cannot quietly inflate a count.
       const inCycle = ids.delete(id);
-      const names = [...ids].map((i) => name.get(i) ?? i).sort();
+      const importers = [...ids]
+        .map((i) => ({ id: i, name: name.get(i) ?? i }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       return {
+        id,
         name: name.get(id) ?? id,
         importOnly: byId.get(id)?.importOnly === true,
         directImporters: reverse.get(id)?.size ?? 0,
         allImporters: ids.size,
         // Uncapped here. Trimming is presentation, applied at the boundary so
         // this function never reports an omission count it did not cause.
-        importerNames: names,
+        importers,
         omittedImporters: 0,
         maxDepth: depth,
         depthTruncated: truncated,
@@ -211,7 +228,7 @@ export function buildUsage(tests: TestRecord[], steps: Map<string, Steps>): Usag
   };
 }
 
-export interface UsageOptions {
+export interface UsageOptions extends ScopeFilter {
   /** Case-insensitive substring of a module name. Lifts the importer-name cap. */
   module?: string | undefined;
 }
@@ -227,7 +244,16 @@ export interface UsageOptions {
 export async function getModuleUsage(options: UsageOptions = {}): Promise<UsageReport> {
   const tests = await request<TestRecord[]>("GET", "tests", { timeoutMs: 120_000 });
   const { steps } = await fetchDefinitions(tests);
-  const report = buildUsage(tests, steps);
+  const scope = await scopeFor(options, tests);
+  const report = scope ? scopeUsage(buildUsage(tests, steps), scope.ids) : buildUsage(tests, steps);
+  if (scope) {
+    report.notes.unshift(
+      scopeNote(
+        scope,
+        "Only modules those tests import are listed, but the whole account was scanned: every importer count and name is account-wide, since a module shared outside the scope is not safe to edit just because the scope looks small.",
+      ),
+    );
+  }
 
   if (options.module) {
     const needle = options.module.toLowerCase();
@@ -242,12 +268,12 @@ export async function getModuleUsage(options: UsageOptions = {}): Promise<UsageR
   // Unfiltered, cap the name lists so a widely-shared module cannot dominate
   // the response — and say how many were dropped, never trimming in silence.
   report.modules = report.modules.map((m) =>
-    m.importerNames.length <= NAME_CAP
+    m.importers.length <= NAME_CAP
       ? m
       : {
           ...m,
-          importerNames: m.importerNames.slice(0, NAME_CAP),
-          omittedImporters: m.importerNames.length - NAME_CAP,
+          importers: m.importers.slice(0, NAME_CAP),
+          omittedImporters: m.importers.length - NAME_CAP,
         },
   );
   const trimmed = report.modules.filter((m) => m.omittedImporters > 0).length;

@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildUsage } from "../dist/modules.js";
+import { buildUsage, scopeUsage } from "../dist/modules.js";
 
 const ex = (...ids) => ids.map((value, sequence) => ({ command: "execute", value, sequence }));
 const step = (command = "click", target = "#a") => ({ command, target });
@@ -73,7 +73,7 @@ test("a cycle is flagged as a defect and excluded from its own count", () => {
   assert.equal(mod("cycle Y").inCycle, true);
   assert.equal(report.totals.cycles, 2);
   // Self-reach would inflate the blast radius by one and read as a dependency.
-  assert.deepEqual(mod("cycle X").importerNames, ["cycle Y"]);
+  assert.deepEqual(mod("cycle X").importers.map((i) => i.name), ["cycle Y"]);
   assert.equal(mod("cycle X").allImporters, 1);
 });
 
@@ -96,7 +96,7 @@ test("the pure function does not trim its own lists", () => {
     new Map([["M", [step()]], ...many.map((m) => [m._id, ex("M")])]),
   );
   const target = wide.modules.find((m) => m.name === "M");
-  assert.equal(target.importerNames.length, 40);
+  assert.equal(target.importers.length, 40);
   assert.equal(target.omittedImporters, 0);
 });
 
@@ -155,4 +155,27 @@ test("a no-op module is measured through its chain, not by literal emptiness", (
 test("the vacuous finding is spelled out in the notes", () => {
   assert.ok(vacuous.notes.some((n) => n.includes("execute NO steps at all")));
   assert.ok(vacuous.notes.some((n) => n.includes("contribute no real step")));
+});
+
+test("a folder filter cannot shrink a module's blast radius", () => {
+  // Scanning only the folder would count only the folder's importers, and a
+  // module shared with 30 tests elsewhere would read as safe to edit.
+  const usage = buildUsage(
+    [
+      { _id: "M", name: "shared", importOnly: true },
+      { _id: "L", name: "local only", importOnly: true },
+      { _id: "a", name: "in scope" },
+      { _id: "b", name: "elsewhere 1" },
+      { _id: "c", name: "elsewhere 2" },
+    ],
+    new Map([["M", [step()]], ["L", [step()]], ["a", ex("M")], ["b", ex("M", "L")], ["c", ex("M")]]),
+  );
+  const scoped = scopeUsage(usage, new Set(["a"]));
+  assert.deepEqual(scoped.modules.map((m) => m.name), ["shared"], "only modules the scope imports");
+  assert.equal(scoped.modules[0].allImporters, 3, "the radius is the account's");
+  assert.deepEqual(scoped.modules[0].importers.map((i) => i.id).sort(), ["a", "b", "c"]);
+});
+
+test("importers come back with their ids", () => {
+  assert.ok(mod("mod A").importers.every((i) => typeof i.id === "string" && typeof i.name === "string"));
 });

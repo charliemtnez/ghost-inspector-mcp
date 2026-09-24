@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { toDetail } from "../dist/detail.js";
+import { readBatch, toDetail } from "../dist/detail.js";
 
 test("the concurrency token survives the trip to the caller", async () => {
   // The whole point of this module: without dateUpdated reaching the caller,
@@ -66,4 +66,16 @@ test("steps are returned unexpanded, so an edit targets the right test", async (
   assert.equal(detail.stepCount, 2);
   assert.equal(detail.steps[0].command, "execute");
   assert.equal(detail.steps[0].value, "2".repeat(24), "the module id is the edge of the graph");
+});
+
+test("one missing id does not sink the batch", async () => {
+  const results = await readBatch(["a", "gone", "b"], async (id) => {
+    if (id === "gone") throw new Error("Result not found");
+    return { id };
+  });
+  assert.deepEqual(results, [
+    { id: "a", result: { id: "a" } },
+    { id: "gone", error: "Result not found" },
+    { id: "b", result: { id: "b" } },
+  ]);
 });

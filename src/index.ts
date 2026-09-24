@@ -21,7 +21,8 @@ import { redact, runsAllowed, writesAllowed } from "./config.js";
 import { stripCredentials } from "./redact-record.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
-import { getTest } from "./detail.js";
+import { getTest, readBatch } from "./detail.js";
+import { findTests } from "./find.js";
 import { diagnoseTest } from "./diagnose.js";
 import { type Steps } from "./graph.js";
 import { getInventory } from "./inventory.js";
@@ -86,6 +87,27 @@ async function safeText(run: () => Promise<unknown>) {
       isError: true,
     };
   }
+}
+
+/**
+ * Runs a read for one id or a batch of them, refusing both or neither.
+ *
+ * @param testId A single id.
+ * @param testIds Up to 20 ids.
+ * @param read Reads one id.
+ * @return The single result, or {results} with one entry per id.
+ * @throws {Error} when both or neither are given.
+ */
+async function oneOrMany<T>(
+  testId: string | undefined,
+  testIds: string[] | undefined,
+  read: (id: string) => Promise<T>,
+): Promise<T | { results: Array<{ id: string; result?: T; error?: string }> }> {
+  if ((testId === undefined) === (testIds === undefined)) {
+    throw new Error("Pass exactly one of testId (one test) or testIds (up to 20).");
+  }
+  if (testId !== undefined) return read(testId);
+  return { results: await readBatch(testIds ?? [], read) };
 }
 
 /**
@@ -239,6 +261,8 @@ server.registerTool(
       "A definition that cannot be read is counted in `scanned.unreadable`, never " +
       "skipped silently, because a missing definition understates a blast radius.",
     inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Lists only the modules its tests import; counts stay account-wide."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Lists only the modules its tests import; with folder, both apply."),
       module: z
         .string()
         .optional()
@@ -248,7 +272,7 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ module }) => safeText(() => getModuleUsage({ module })),
+  async ({ module, folder, suite }) => safeText(() => getModuleUsage({ module, folder, suite })),
 );
 
 server.registerTool(
@@ -275,6 +299,8 @@ server.registerTool(
       "rather than evaluated, since they have no results to compare against.\n\n" +
       "Costs one request per test, a few seconds for a few hundred tests.",
     inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Narrows the report to that folder's tests."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Narrows the report to that suite's tests; with folder, both apply."),
       includePasses: z
         .boolean()
         .optional()
@@ -284,7 +310,7 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ includePasses }) => safeText(() => getStaleTests({ includePasses })),
+  async ({ includePasses, folder, suite }) => safeText(() => getStaleTests({ includePasses, folder, suite })),
 );
 
 const STEP_SCHEMA = z.object({
@@ -317,6 +343,39 @@ const STEP_SCHEMA = z.object({
 });
 
 server.registerTool(
+  "gi_find_tests",
+  {
+    title: "Ghost Inspector: find tests by name, place or step",
+    description:
+      "Read-only. Finds tests and returns their ids, which every other tool takes, " +
+      "with suite, folder, importOnly and passing.\n\n" +
+      "`name`, `folder` and `suite` are matched against the listing: case-insensitive " +
+      "substrings, or an exact id for folder and suite. They are cheap, three requests. " +
+      "`step` searches each remaining test's own steps (command exact, target across " +
+      "every fallback selector, value as a substring) and costs one request per test " +
+      "left after the other filters, so narrow first on a large account. A match " +
+      "inside a module is reported on the module, not on the tests that import it; " +
+      "gi_module_usage lists those.",
+    inputSchema: {
+      name: z.string().optional().describe("Part of the test's name."),
+      folder: z.string().optional().describe("Folder id, or part of its name."),
+      suite: z.string().optional().describe("Suite id, or part of its name."),
+      step: z
+        .object({
+          command: z.string().optional().describe('Exact command, e.g. "click".'),
+          target: z.string().optional().describe("Part of any authored selector, fallbacks included."),
+          value: z.string().optional().describe("Part of the step's value."),
+        })
+        .optional()
+        .describe("Match tests by what their own steps do. All given fields must match one step."),
+      limit: z.number().int().min(1).max(500).optional().describe("Most results to return. Default 50; `total` is always the full count."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ name, folder, suite, step, limit }) => safeText(() => findTests({ name, folder, suite, step, limit })),
+);
+
+server.registerTool(
   "gi_get_test",
   {
     title: "Ghost Inspector: read one test, with the token an edit requires",
@@ -336,11 +395,24 @@ server.registerTool(
       "module inline. If the step you need to fix came from a module, edit that " +
       "module's test, not this one.",
     inputSchema: {
-      testId: z.string().describe("The 24-character test id."),
+      testId: z.string().optional().describe("The 24-character test id."),
+      testIds: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error; one failure does not sink the rest."),
+      expandModules: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also return `expanded`: every step a run would execute, modules inlined, each with ownerId, ownerName, indexInOwner (its position in its owner's own list), rootIndex and the combined condition. It lines up with a result's steps position by position.",
+        ),
     },
     annotations: READ_ONLY,
   },
-  async ({ testId }) => safeText(() => getTest(testId)),
+  async ({ testId, testIds, expandModules }) =>
+    safeText(() => oneOrMany(testId, testIds, (id) => getTest(id, { expandModules }))),
 );
 
 server.registerTool(
@@ -382,7 +454,13 @@ server.registerTool(
       "outside the steps — a start URL that would not load), and results that " +
       "have been purged, which it reports as a horizon instead of as silence.",
     inputSchema: {
-      testId: z.string().describe("The 24-character test id."),
+      testId: z.string().optional().describe("The 24-character test id."),
+      testIds: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error; one failure does not sink the rest."),
       runsBack: z
         .number()
         .int()
@@ -392,7 +470,8 @@ server.registerTool(
     },
     annotations: READ_ONLY,
   },
-  async ({ testId, runsBack }) => safeText(() => diagnoseTest({ testId, runsBack })),
+  async ({ testId, testIds, runsBack }) =>
+    safeText(() => oneOrMany(testId, testIds, (id) => diagnoseTest({ testId: id, runsBack }))),
 );
 
 server.registerTool(
@@ -418,11 +497,14 @@ server.registerTool(
       "passes; if it does, the test proves nothing.\n\n" +
       "Modules are excluded before counting: import-only deletes results, so " +
       "including them would condemn the shared layer every live test depends on. " +
-      "Costs one request per test.",
-    inputSchema: {},
+      "Costs one request per test; with folder or suite, one per test in scope plus the modules they import.",
+    inputSchema: {
+      folder: z.string().optional().describe("Folder id, or part of its name. Narrows the report to that folder's tests."),
+      suite: z.string().optional().describe("Suite id, or part of its name. Narrows the report to that suite's tests; with folder, both apply."),
+    },
     annotations: READ_ONLY,
   },
-  async () => safeText(() => getVacuousTests()),
+  async ({ folder, suite }) => safeText(() => getVacuousTests({ folder, suite })),
 );
 
 server.registerTool(

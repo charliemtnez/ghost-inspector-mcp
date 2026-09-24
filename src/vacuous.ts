@@ -24,7 +24,8 @@
  */
 
 import { isModule, request, type TestRecord } from "./client.js";
-import { buildEdges, fetchDefinitions, walk, type Steps } from "./graph.js";
+import { buildEdges, fetchDefinitions, fetchDefinitionsClosure, walk, type Steps } from "./graph.js";
+import { scopeFor, scopeNote, type ScopeFilter } from "./scope.js";
 
 /** Commands that can make a test fail on purpose rather than by accident. */
 const ASSERTION = /^assert/i;
@@ -110,6 +111,7 @@ export function buildVacuityReport(
   tests: TestRecord[],
   steps: Map<string, Steps>,
   unreadable = 0,
+  only?: ReadonlySet<string>,
 ): VacuityReport {
   const { forward } = buildEdges(tests, steps);
   const executesNothing: VacuousFinding[] = [];
@@ -118,6 +120,7 @@ export function buildVacuityReport(
   let modulesExcluded = 0;
 
   for (const test of tests) {
+    if (only && !only.has(test._id)) continue;
     if (isModule(test)) {
       modulesExcluded += 1;
       continue;
@@ -182,7 +185,7 @@ export function buildVacuityReport(
   }
 
   return {
-    scanned: { tests: tests.length, modulesExcluded, unreadable },
+    scanned: { tests: only ? tests.filter((test) => only.has(test._id)).length : tests.length, modulesExcluded, unreadable },
     totals: {
       executesNothing: executesNothing.length,
       assertsNothing: assertsNothing.length,
@@ -207,8 +210,11 @@ export function buildVacuityReport(
  * @returns The three classes, with modules excluded before counting.
  * @throws {ConfigError} when the API key is not configured.
  */
-export async function getVacuousTests(): Promise<VacuityReport> {
+export async function getVacuousTests(filter: ScopeFilter = {}): Promise<VacuityReport> {
   const tests = await request<TestRecord[]>("GET", "tests");
-  const { steps, unreadable } = await fetchDefinitions(tests);
-  return buildVacuityReport(tests, steps, unreadable);
+  const scope = await scopeFor(filter, tests);
+  const { steps, unreadable } = scope ? await fetchDefinitionsClosure([...scope.ids]) : await fetchDefinitions(tests);
+  const report = buildVacuityReport(tests, steps, unreadable, scope?.ids);
+  if (scope) report.notes.unshift(scopeNote(scope));
+  return report;
 }

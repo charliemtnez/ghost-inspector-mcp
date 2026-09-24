@@ -17,7 +17,8 @@
  */
 
 import { hasNeverExecuted, isModule, request, type TestRecord } from "./client.js";
-import { buildEdges, fetchDefinitions, walk, type Steps } from "./graph.js";
+import { buildEdges, fetchDefinitions, fetchDefinitionsClosure, walk, type Steps } from "./graph.js";
+import { scopeFor, scopeNote, type ScopeFilter } from "./scope.js";
 
 /** Findings listed per bucket before switching to a count. */
 const FINDING_CAP = 25;
@@ -113,9 +114,11 @@ export function buildStaleReport(
   tests: TestRecord[],
   steps: Map<string, Steps>,
   now: number,
+  only?: ReadonlySet<string>,
 ): StaleReport {
   const { forward, name } = buildEdges(tests, steps);
   const byId = new Map(tests.map((t) => [t._id, t]));
+  const inScope = only ? tests.filter((test) => only.has(test._id)) : tests;
 
   const staleFailures: StaleFinding[] = [];
   const genuineFailures: PlainFinding[] = [];
@@ -128,6 +131,7 @@ export function buildStaleReport(
   let anyTruncated = false;
 
   for (const test of tests) {
+    if (only && !only.has(test._id)) continue;
     // Modules first, always. Import-only deletes a test's results, so every
     // module reads as never-run; measuring one against its chain would report
     // the entire shared layer as stale.
@@ -233,7 +237,11 @@ export function buildStaleReport(
   }
 
   return {
-    scanned: { tests: tests.length, stepRequests: steps.size, unreadable: tests.length - steps.size },
+    scanned: {
+      tests: inScope.length,
+      stepRequests: steps.size,
+      unreadable: inScope.filter((test) => !steps.has(test._id)).length,
+    },
     totals: {
       evaluated,
       failing,
@@ -258,7 +266,7 @@ export function buildStaleReport(
   };
 }
 
-export interface StaleOptions {
+export interface StaleOptions extends ScopeFilter {
   /** Include the unverified-passes bucket. Off by default: it is the long one. */
   includePasses?: boolean | undefined;
 }
@@ -273,8 +281,12 @@ export interface StaleOptions {
  */
 export async function getStaleTests(options: StaleOptions = {}): Promise<StaleReport> {
   const tests = await request<TestRecord[]>("GET", "tests", { timeoutMs: 120_000 });
-  const { steps } = await fetchDefinitions(tests);
-  const report = buildStaleReport(tests, steps, Date.now());
+  const scope = await scopeFor(options, tests);
+  const { steps } = scope ? await fetchDefinitionsClosure([...scope.ids]) : await fetchDefinitions(tests);
+  const report = buildStaleReport(tests, steps, Date.now(), scope?.ids);
+  if (scope) {
+    report.notes.unshift(scopeNote(scope));
+  }
 
   if (!options.includePasses) {
     report.unverifiedPasses = [];

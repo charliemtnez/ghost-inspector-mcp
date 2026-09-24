@@ -130,3 +130,12 @@ test("the pure function does not trim its own lists", () => {
   assert.equal(r.unverifiedPassesOmitted, 0);
   assert.equal(r.totals.passingUnverified, 30);
 });
+
+test("a scoped stale report evaluates only the scope", () => {
+  const target = tests.find((t) => !t.importOnly && t.passing === false);
+  const scoped = buildStaleReport(tests, steps, NOW, new Set([target._id]));
+  assert.equal(scoped.totals.evaluated, 1);
+  assert.equal(scoped.scanned.tests, 1, "the scope, not the account");
+  assert.equal(scoped.scanned.unreadable, 0, "a test outside the scope is not unreadable, only unread");
+  assert.ok(report.totals.evaluated > 1);
+});

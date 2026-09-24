@@ -6,7 +6,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { DOCUMENTED_MAX_DEPTH, buildEdges, collectChainIds, executedIds, walk } from "../dist/graph.js";
+import {
+  DOCUMENTED_MAX_DEPTH,
+  buildEdges,
+  collectChainIds,
+  executedIds,
+  fetchDefinitionsClosure,
+  walk,
+} from "../dist/graph.js";
+import { resolveScope } from "../dist/scope.js";
 
 const ex = (...ids) => ids.map((value, sequence) => ({ command: "execute", value, sequence }));
 
@@ -142,4 +150,36 @@ test("collectChainIds reports hitting the depth limit", async () => {
   for (let i = 0; i < DOCUMENTED_MAX_DEPTH + 3; i += 1) steps.set(`n${i}`, ex(`n${i + 1}`));
   const { truncated } = await collectChainIds("n0", async (id) => steps.get(id) ?? []);
   assert.equal(truncated, true);
+});
+
+// --- scoping a scan -----------------------------------------------------------
+
+test("a scoped scan still loads every module its tests import", async () => {
+  // Evaluating a folder's tests without their modules reads every import as
+  // empty, which is exactly how an emptied module looked.
+  const defs = {
+    t1: [{ command: "execute", value: "m1" }],
+    m1: [{ command: "execute", value: "m2" }, { command: "assign" }],
+    m2: [{ command: "click" }],
+    other: [{ command: "click" }],
+  };
+  const loaded = [];
+  const { steps, unreadable } = await fetchDefinitionsClosure(["t1", "gone"], async (id) => {
+    loaded.push(id);
+    return defs[id] ?? null;
+  });
+  assert.deepEqual([...steps.keys()].sort(), ["m1", "m2", "t1"]);
+  assert.equal(unreadable, 1, "a definition that could not be read is counted");
+  assert.ok(!loaded.includes("other"), "nothing outside the closure is fetched");
+});
+
+test("a folder or suite filter matches by id or by name, case-insensitively", () => {
+  const folders = [{ _id: "f1", name: "Checkout Flows" }, { _id: "f2", name: "Blog" }];
+  const suites = [{ _id: "s1", name: "Cart", folder: "f1" }, { _id: "s2", name: "Payment", folder: "f1" }, { _id: "s3", name: "Posts", folder: "f2" }];
+  const tests = [{ _id: "t1", suite: { _id: "s1" } }, { _id: "t2", suite: { _id: "s2" } }, { _id: "t3", suite: { _id: "s3" } }];
+  assert.deepEqual([...resolveScope({ folder: "checkout" }, folders, suites, tests).ids].sort(), ["t1", "t2"]);
+  assert.deepEqual([...resolveScope({ suite: "s3" }, folders, suites, tests).ids], ["t3"]);
+  assert.deepEqual([...resolveScope({ folder: "f1", suite: "pay" }, folders, suites, tests).ids], ["t2"]);
+  assert.equal(resolveScope({ folder: "nothing" }, folders, suites, tests).ids.size, 0);
+  assert.equal(resolveScope({}, folders, suites, tests), null, "no filter is the whole account");
 });
