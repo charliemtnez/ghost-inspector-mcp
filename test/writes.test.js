@@ -12,7 +12,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { assessStaleness, buildUpdateBody, diffSteps, diffUntouched } from "../dist/writes.js";
+import {
+  appliedResult,
+  assessStaleness,
+  buildUpdateBody,
+  diffSteps,
+  diffUntouched,
+  refusedResult,
+} from "../dist/writes.js";
 
 const iso = (s) => new Date(Date.parse(s)).toISOString();
 const RUN = iso("2026-08-01T12:00:00Z");
@@ -195,4 +202,26 @@ test("a field that disappeared during the write is reported", () => {
   const before = { _id: "t", name: "n", suite: "s1" };
   const after = { _id: "t", name: "n" };
   assert.deepEqual(diffUntouched(before, after, ["name"]).map((x) => x.field), ["suite"]);
+});
+
+// --- what a write hands back ------------------------------------------------
+
+/** A write context over a fresh, current test, as updateTest builds it. */
+const context = (before) => ({
+  before, staleness: assessStaleness(before, [], false), sentFields: ["steps"], chainLength: 0,
+});
+
+test("an applied write hands back the token for the next edit", () => {
+  const before = subject({ steps: [] });
+  const body = buildUpdateBody({ steps: [{ command: "click", target: "#a" }] });
+  const after = { ...before, dateUpdated: AFTER, steps: [stored("click", "#a")] };
+  const result = appliedResult(context(before), body, after);
+  assert.equal(result.dateUpdated, AFTER);
+  assert.ok(result.notes.some((note) => note.includes("expectedDateUpdated")));
+});
+
+test("a refused write hands back the token it was refused against", () => {
+  const result = refusedResult(context(subject()), "concurrency token mismatch", []);
+  assert.equal(result.applied, false);
+  assert.equal(result.dateUpdated, BEFORE);
 });

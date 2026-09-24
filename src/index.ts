@@ -542,8 +542,14 @@ server.registerTool(
         "landed exactly and that every field you did not send is untouched — " +
         "`HTTP 200` proves neither.\n\n" +
         "`expectedDateUpdated` is required: state the `dateUpdated` you believe is " +
-        "current, and the write is refused if the record has moved since. Read the " +
-        "test first; a refusal tells you the current value so a retry is one step.\n\n" +
+        "current, and the write is refused if the record has moved since. Read it " +
+        "with gi_get_test first. Every response carries the record's current " +
+        "`dateUpdated`; after an applied write that is the token for the next " +
+        "edit, so a series of edits needs no re-read in between. After a refusal, " +
+        "re-read and recompose rather than resending.\n\n" +
+        "Each step's `sequence` is overwritten with its position. Results map a " +
+        "failure back to its step through that field, and a list stored without " +
+        "it maps every failure to step 0.\n\n" +
         "Before overwriting a red test, prefer gi_validate_test, which runs the " +
         "current definition without saving and without submitting a form. If the " +
         "staleness guard trips and you have genuinely verified the current state, " +
