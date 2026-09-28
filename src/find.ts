@@ -19,6 +19,8 @@ export interface FindFilter {
   folder?: string | undefined;
   suite?: string | undefined;
   step?: StepFilter | undefined;
+  /** Only tests whose screenshot comparison is enabled and currently failing. */
+  screenshotFailing?: boolean | undefined;
   limit?: number | undefined;
 }
 
@@ -35,7 +37,10 @@ export interface Found {
   suite: { id: string; name: string } | null;
   folder: { id: string; name: string } | null;
   importOnly: boolean;
+  /** The functional result only: a test can pass here while its screenshot comparison fails. */
   passing: boolean | null;
+  /** Comparison enabled after inheriting from the suite, and whether it passes; passing is null when it does not run. */
+  screenshotCompare: { enabled: boolean | null; passing: boolean | null };
   stepMatches?: StepMatch[];
 }
 
@@ -111,7 +116,8 @@ export function describeFound(test: TestRecord, suites: SuiteRecord[], folders: 
     suite: suiteId ? { id: suiteId, name: String(suite?.name ?? (suiteRef as { name?: unknown }).name ?? "") } : null,
     folder: folder ? { id: folder._id, name: folder.name ?? "" } : null,
     importOnly: test.importOnly === true,
-    passing: test.passing === true || test.passing === false ? test.passing : null,
+    passing: bool(test.passing),
+    screenshotCompare: screenshotCompareOf(test, suite),
   };
 }
 
@@ -135,6 +141,9 @@ export async function findTests(filter: FindFilter): Promise<FindReport> {
   const searchSteps = Boolean(step && (step.command || step.target || step.value));
 
   let found: Found[] = listed.map((test) => describeFound(test, suites, folders));
+  if (filter.screenshotFailing) {
+    found = found.filter((entry) => entry.screenshotCompare.enabled === true && entry.screenshotCompare.passing === false);
+  }
   if (searchSteps && step) {
     const ids = listed.map((test) => test._id);
     const definitions = await fetchDefinitionsClosure(ids, undefined, 0);
@@ -150,6 +159,29 @@ export async function findTests(filter: FindFilter): Promise<FindReport> {
   }
   if (found.length > limit) notes.push(`Showing ${limit} of ${found.length}. Narrow the search or raise limit.`);
   return { total: found.length, matches: found.slice(0, limit), notes };
+}
+
+/**
+ * A test's screenshot comparison from the listing: its own `null` setting inherits the suite's.
+ *
+ * @param test The test record.
+ * @param suite Its suite, when known.
+ * @return Whether comparison runs, and whether it passes when it does.
+ */
+function screenshotCompareOf(test: TestRecord, suite: SuiteRecord | undefined): Found["screenshotCompare"] {
+  const own = bool(test["screenshotCompareEnabled"]);
+  const enabled = own ?? bool(suite?.screenshotCompareEnabled);
+  return { enabled, passing: enabled === false ? null : bool(test["screenshotComparePassing"]) };
+}
+
+/**
+ * A value as a boolean, or null.
+ *
+ * @param value Anything.
+ * @return The boolean, or null.
+ */
+function bool(value: unknown): boolean | null {
+  return value === true || value === false ? value : null;
 }
 
 /**

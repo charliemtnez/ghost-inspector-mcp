@@ -21,20 +21,26 @@ test("accepting a screenshot you have not looked at is refused", () => {
 
 test("there is nothing to accept when the comparison passed or did not run", () => {
   // Ghost Inspector answers VALIDATION_ERROR "Unable to accept screenshot" then.
-  assert.match(acceptRefusal({ ...latest, screenshotComparePassing: true }, "r2"), /nothing to accept/);
+  assert.match(acceptRefusal({ ...latest, screenshotComparePassing: true, screenshotCompareDifference: 0.02 }, "r2"), /nothing to accept/);
+  // Passing above the threshold is what an accept leaves behind: the result is already the baseline.
+  assert.match(acceptRefusal({ ...latest, screenshotComparePassing: true }, "r2"), /already accepted/);
   assert.match(acceptRefusal({ ...latest, screenshotCompareEnabled: false }, "r2"), /did not run/);
 });
 
 test("the status shows the current image, the diff and the baseline side by side", () => {
+  const r1 = { _id: "r1", passing: true, dateExecutionFinished: "2026-09-01T10:00:00Z", screenshotCompareEnabled: true, screenshotComparePassing: true, screenshot: { original: { defaultUrl: "https://example.com/base.png" } } };
   const status = describeScreenshots(
     { _id: "t", name: "T", screenshotCompareEnabled: null, screenshotComparePassing: false, screenshotCompareThreshold: 0.1 },
-    latest,
-    { _id: "r1", dateExecutionFinished: "2026-09-01T10:00:00Z", screenshot: { original: { defaultUrl: "https://example.com/base.png" } } },
+    { screenshotCompareEnabled: true, screenshotCompareThreshold: 0.1 },
+    [latest, r1],
+    r1,
+    r1,
   );
   assert.equal(status.latestResult.id, "r2");
   assert.equal(status.latestResult.difference, 0.234);
   assert.equal(status.latestResult.screenshotUrl, "https://example.com/now.png");
   assert.equal(status.latestResult.diffUrl, "https://example.com/diff.png");
-  assert.equal(status.baseline.screenshotUrl, "https://example.com/base.png");
+  assert.equal(status.comparedAgainst.screenshotUrl, "https://example.com/base.png");
+  assert.equal(status.currentBaseline.resultId, "r1", "a failing comparison leaves the old baseline in place");
   assert.ok(status.notes.some((n) => /expectedResultId/.test(n)));
 });

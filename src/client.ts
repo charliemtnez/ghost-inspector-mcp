@@ -190,6 +190,17 @@ export interface TestRecord {
   [key: string]: unknown;
 }
 
+/**
+ * The id of the suite a test is in; the test record carries it expanded.
+ *
+ * @param test The test record.
+ * @return The suite id, or an empty string.
+ */
+export function suiteIdOf(test: TestRecord): string {
+  const ref = test["suite"];
+  return ref && typeof ref === "object" ? String((ref as { _id?: unknown })._id ?? "") : String(ref ?? "");
+}
+
 /** Minimal shape of a folder, as returned by `GET /folders/`. */
 export interface FolderRecord {
   _id: string;
@@ -208,6 +219,10 @@ export interface SuiteRecord {
   folder?: string;
   testCount?: number;
   organization?: string;
+  /** What a test whose own setting is `null` inherits. */
+  screenshotCompareEnabled?: boolean | null;
+  screenshotCompareThreshold?: number | null;
+  testFrequency?: number | null;
 }
 
 /**

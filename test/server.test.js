@@ -25,6 +25,7 @@ const READ_ONLY = [
   "gi_module_usage",
   "gi_plan_test",
   "gi_propose_repair",
+  "gi_screenshot_diff",
   "gi_screenshot_status",
   "gi_stale_tests",
   "gi_test_history",
@@ -33,7 +34,7 @@ const READ_ONLY = [
   "gi_validate_test",
   "gi_whoami",
 ];
-const WRITE = ["gi_accept_screenshot", "gi_create_suite", "gi_duplicate_test", "gi_move_suite", "gi_update_test"];
+const WRITE = ["gi_accept_screenshot", "gi_create_suite", "gi_duplicate_test", "gi_move_suite", "gi_move_test", "gi_update_test"];
 
 /** Starts the server, asks for its tools over stdio, and returns their names. */
 async function listTools(env = {}) {
@@ -120,6 +121,7 @@ const GATED = [
   ["gi_accept_screenshot", { testId: "a".repeat(24), expectedResultId: "b".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_update_test", { testId: "a".repeat(24), expectedDateUpdated: "x" }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_move_suite", { suiteId: "a".repeat(24), folderId: "b".repeat(24), expectedCurrentFolder: "c".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
+  ["gi_move_test", { testId: "a".repeat(24), suiteId: "b".repeat(24), expectedCurrentSuite: "c".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_create_suite", { name: "x" }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_duplicate_test", { sourceTestId: "a".repeat(24) }, "GHOST_INSPECTOR_ALLOW_WRITES"],
   ["gi_run_test", { testId: "a".repeat(24) }, "GHOST_INSPECTOR_ALLOW_RUNS"],
@@ -219,8 +221,9 @@ test("every tool declares the posture a client's permission model reads", async 
   }
   const update = tools.find((t) => t.name === "gi_update_test");
   assert.equal(update.annotations.destructiveHint, true, "an unversioned overwrite is destructive");
-  const move = tools.find((t) => t.name === "gi_move_suite");
-  assert.equal(move.annotations.destructiveHint, false, "a move is the one reversible write");
+  for (const name of ["gi_move_suite", "gi_move_test"]) {
+    assert.equal(tools.find((t) => t.name === name).annotations.destructiveHint, false, `${name} is reversible`);
+  }
   for (const name of ["gi_create_suite", "gi_duplicate_test"]) {
     assert.equal(
       tools.find((t) => t.name === name).annotations.destructiveHint,

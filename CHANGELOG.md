@@ -6,6 +6,45 @@ Tool names, input schemas and MCP annotations are part of the interface here: a
 calling model's behaviour depends on them, and a client may gate permissions on
 them. Changes to any of those are listed even when no code path moved.
 
+## [0.4.0] — 2026-09-28
+
+Fixes from a second real-use audit of the screenshot tools, where reading a
+comparison after an accept required going to the API directly.
+
+### Fixed
+
+- 🔴 **`gi_screenshot_status` no longer presents the old image as the baseline
+  after an accept.** It reported `screenshotCompareBaselineResult` as
+  `baseline`, but that field names the image a result was *measured against*.
+  Accepting makes the accepted result itself the baseline and flips it to
+  passing while its difference stays above the threshold. The response now
+  separates `comparedAgainst` from `currentBaseline`, marks
+  `latestResult.acceptedManually`, and says so in the notes. **Breaking:**
+  `baseline` and `latestResult.baselineResultId` are gone.
+- **Comparison settings are resolved through the suite.** A test that stores
+  `screenshotCompareEnabled: null` inherits it, and the threshold, from its
+  suite; the tool copied the `null` and reported the test's unused threshold.
+  `test.enabled` and `test.threshold` are now the settings in force, with
+  `settingsFrom`.
+- **`gi_accept_screenshot` verifies the accept landed on the result.** It checked
+  only the test's flag; it now re-reads the accepted result and confirms it is
+  the baseline the next run will use (`verification.currentBaselineResult`).
+  Accepting a result that was already accepted is refused as such.
+
+### Added
+
+- **`gi_find_tests` reports screenshot comparison.** `passing` is the functional
+  result only, so a test failing its visual comparison read as green. Each match
+  now carries `screenshotCompare: {enabled, passing}`, and `screenshotFailing`
+  lists only those failing — from the listing, no extra requests.
+- **`gi_screenshot_status` takes `testIds`**, up to 20, like `gi_get_test`.
+- **`gi_screenshot_diff`** (read): compares a result's full-size screenshot with
+  its baseline and returns the changed regions, plus full-size PNG crops of the
+  largest, baseline above current. PNG decoding is built in; no dependency.
+- **`gi_move_test`** (write): moves a test to another suite behind an
+  `expectedCurrentSuite` token, verifies the steps are untouched, and warns when
+  the destination is scheduled. Retiring a test is a move; deleting stays out.
+
 ## [0.3.0] — 2026-09-24
 
 Fixes from a real-use audit. A failure inside a module pointed at the wrong

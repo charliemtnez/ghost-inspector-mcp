@@ -28,13 +28,13 @@ import { type Steps } from "./graph.js";
 import { failureGroups, testHistory } from "./history.js";
 import { getInventory } from "./inventory.js";
 import { getModuleUsage } from "./modules.js";
-import { acceptScreenshot, screenshotStatus } from "./screenshots.js";
+import { acceptScreenshot, screenshotDiff, screenshotStatus } from "./screenshots.js";
 import { getStaleTests } from "./stale.js";
 import { planTest, validateTest, type ValidateOptions } from "./validate.js";
 import { getVacuousTests } from "./vacuous.js";
 import { proposeRepair } from "./repair.js";
 import { runTest } from "./run.js";
-import { moveSuite, updateTest } from "./writes.js";
+import { moveSuite, moveTest, updateTest } from "./writes.js";
 
 // The manifest ships beside dist/ in the npm package, so it is readable in
 // every installed layout. One source for the version; npm bumps it, this reads it.
@@ -57,7 +57,7 @@ const server = new McpServer(
       "Analyze, validate and safely update Ghost Inspector end-to-end browser tests.\n\n" +
       "EVERY tool is listed, including the gated ones, so you never have to infer a " +
       "capability from an absence. Reading needs nothing. Mutating (gi_update_test, " +
-      "gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot) needs " +
+      "gi_move_suite, gi_move_test, gi_create_suite, gi_duplicate_test, gi_accept_screenshot) needs " +
       "GHOST_INSPECTOR_ALLOW_WRITES=true. Executing a stored test (gi_run_test) needs " +
       "GHOST_INSPECTOR_ALLOW_RUNS=true, which the write variable does NOT imply. Call a " +
       "gated tool without its variable and it refuses, changes nothing, and tells the user " +
@@ -88,6 +88,27 @@ async function safeText(run: () => Promise<unknown>) {
       content: [{ type: "text" as const, text: `ERROR: ${redact(message)}` }],
       isError: true,
     };
+  }
+}
+
+/**
+ * Like safeText, with PNG images after the JSON: for tools whose answer is partly something to look at.
+ *
+ * @param run Produces the JSON part and the images.
+ * @return The MCP content, or the redacted error.
+ */
+async function safeImages(run: () => Promise<{ value: unknown; images: Buffer[] }>) {
+  try {
+    const { value, images } = await run();
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(stripCredentials(value), null, 2) },
+        ...images.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
+      ],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { content: [{ type: "text" as const, text: `ERROR: ${redact(message)}` }], isError: true };
   }
 }
 
@@ -196,7 +217,7 @@ server.registerTool(
         runsEnabled: runsAllowed(),
         gates: {
           writes:
-            "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_create_suite, gi_duplicate_test, gi_accept_screenshot",
+            "GHOST_INSPECTOR_ALLOW_WRITES — gi_update_test, gi_move_suite, gi_move_test, gi_create_suite, gi_duplicate_test, gi_accept_screenshot",
           runs: "GHOST_INSPECTOR_ALLOW_RUNS — gi_run_test. Not implied by the write gate.",
         },
         organizations: orgs.map((o) => ({ id: o._id, name: o.name })),
@@ -352,7 +373,11 @@ server.registerTool(
     title: "Ghost Inspector: find tests by name, place or step",
     description:
       "Read-only. Finds tests and returns their ids, which every other tool takes, " +
-      "with suite, folder, importOnly and passing.\n\n" +
+      "with suite, folder, importOnly, passing and screenshotCompare.\n\n" +
+      "🔴 `passing` is the functional result only. A test can be green there while its " +
+      "screenshot comparison fails: read `screenshotCompare.passing` for that, or pass " +
+      "`screenshotFailing: true` to list only those. Comparison settings a test leaves " +
+      "at null are inherited from its suite, and `screenshotCompare.enabled` resolves that.\n\n" +
       "`name`, `folder` and `suite` are matched against the listing: case-insensitive " +
       "substrings, or an exact id for folder and suite. They are cheap, three requests. " +
       "`step` searches each remaining test's own steps (command exact, target across " +
@@ -372,11 +397,16 @@ server.registerTool(
         })
         .optional()
         .describe("Match tests by what their own steps do. All given fields must match one step."),
+      screenshotFailing: z
+        .boolean()
+        .optional()
+        .describe("Only tests whose screenshot comparison is enabled and failing. Cheap: read from the listing."),
       limit: z.number().int().min(1).max(500).optional().describe("Most results to return. Default 50; `total` is always the full count."),
     },
     annotations: READ_ONLY,
   },
-  async ({ name, folder, suite, step, limit }) => safeText(() => findTests({ name, folder, suite, step, limit })),
+  async ({ name, folder, suite, step, screenshotFailing, limit }) =>
+    safeText(() => findTests({ name, folder, suite, step, screenshotFailing, limit })),
 );
 
 server.registerTool(
@@ -538,15 +568,65 @@ server.registerTool(
     description:
       "Read-only. The test's screenshot-comparison settings and its latest result's " +
       "comparison: enabled, passing, the measured difference against the threshold, " +
-      "and three image URLs to look at: the current screenshot (`screenshotUrl`), " +
-      "the difference image (`diffUrl`) and the baseline it was compared with. " +
+      "the current screenshot (`screenshotUrl`) and the difference image (`diffUrl`).\n\n" +
+      "Two images are kept apart because they stop being the same one the moment a " +
+      "screenshot is accepted. `comparedAgainst` is the image the latest result was " +
+      "measured against. `currentBaseline` is the one the next run will be compared " +
+      "against: the newest result whose comparison passed. Accepting flips a result " +
+      "to passing, so right after an accept the latest result reads passing with a " +
+      "difference above its threshold (`acceptedManually: true`), it is itself the " +
+      "baseline, and `comparedAgainst` still names the old image.\n\n" +
+      "`test.enabled` and `test.threshold` are the settings in force: a test that " +
+      "stores null inherits both from its suite, and the threshold stored on such a " +
+      "test is not the one applied. To find which tests to look at, gi_find_tests " +
+      "with `screenshotFailing: true` and a suite. To see what changed, gi_screenshot_diff. " +
       "`latestResult.id` is what gi_accept_screenshot takes as `expectedResultId`.",
     inputSchema: {
-      testId: z.string().describe("The 24-character test id."),
+      testId: z.string().optional().describe("The 24-character test id."),
+      testIds: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Up to 20 test ids instead of testId. Each comes back with its own result or error."),
     },
     annotations: READ_ONLY,
   },
-  async ({ testId }) => safeText(() => screenshotStatus(testId)),
+  async ({ testId, testIds }) => safeText(() => oneOrMany(testId, testIds, screenshotStatus)),
+);
+
+server.registerTool(
+  "gi_screenshot_diff",
+  {
+    title: "Ghost Inspector: where a screenshot changed",
+    description:
+      "Read-only. Downloads a result's full-size screenshot and a baseline's, compares " +
+      "them pixel by pixel, and returns the changed regions as horizontal bands " +
+      "(rows and columns in the full-size image, largest first), followed by PNG crops " +
+      "of the largest ones: baseline above a red rule, this result below.\n\n" +
+      "Look at the crops before gi_accept_screenshot: accepting cannot be undone. " +
+      "`changedShare` is this tool's own pixel count, not Ghost Inspector's " +
+      "`difference`, which uses an unpublished method, so the two will not match. " +
+      "A page that grew or content that moved down shows up as one band covering " +
+      "everything below the move; the notes say so. Each screenshot is a few MB, so " +
+      "this costs two downloads.",
+    inputSchema: {
+      testId: z.string().describe("The 24-character test id."),
+      resultId: z.string().optional().describe("The result to inspect. Default: the latest."),
+      against: z
+        .enum(["comparedAgainst", "currentBaseline"])
+        .optional()
+        .describe("comparedAgainst (default): the image the result was measured against, which explains its difference. currentBaseline: what the next run will be compared with."),
+      crops: z.number().int().min(0).max(5).optional().describe("How many regions to return as images. Default 3; 0 for the regions alone."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ testId, resultId, against, crops }) =>
+    safeImages(async () => {
+      const diff = await screenshotDiff({ testId, resultId, against, crops });
+      const value = { ...diff, crops: diff.crops.map(({ top, bottom }) => ({ top, bottom })) };
+      return { value, images: diff.crops.map((crop) => crop.png) };
+    }),
 );
 
 server.registerTool(
@@ -897,8 +977,11 @@ server.registerTool(
         "since, if the latest run is still going, or if its comparison passed or did " +
         "not run (there is nothing to accept then). The check is read-then-accept with " +
         "no compare-and-swap, so a run landing in the moment between them could still " +
-        "slip through: it catches a stale id, not a genuine race. After the accept the test is re-read and `verification` shows " +
-        "`screenshotComparePassing`. Accepting does not move `dateUpdated`, so it does " +
+        "slip through: it catches a stale id, not a genuine race. After the accept the accepted " +
+        "result is re-read: `verification` confirms it reads comparison passing and is now " +
+        "`currentBaselineResult`, the image the next run will be compared against. Its own " +
+        "`screenshotCompareBaselineResult` keeps naming the old image, which is what it was " +
+        "measured against, not the baseline. Accepting does not move `dateUpdated`, so it does " +
         "not invalidate a token you already hold.",
       inputSchema: {
         testId: z.string().describe("The 24-character test id."),
@@ -939,6 +1022,37 @@ server.registerTool(
     async ({ suiteId, folderId, expectedCurrentFolder }) =>
       gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
         moveSuite({ suiteId, folderId, expectedCurrentFolder }),
+      ),
+  );
+
+  server.registerTool(
+    "gi_move_test",
+    {
+      title: "Ghost Inspector: move a test to another suite",
+      description:
+        "Moves one test into another suite, steps untouched. Reversible: the response " +
+        "carries `previousSuite`, so the undo is one call. This is also how to retire " +
+        "a test: move it to a suite that has no schedule. Deleting a test is not offered, " +
+        "because Ghost Inspector keeps no version history and no recycle bin.\n\n" +
+        "`expectedCurrentSuite` is required: the suite id you believe the test is in, " +
+        "from gi_get_test or gi_find_tests. The move is refused if it is elsewhere.\n\n" +
+        "🔴 A test runs with its suite. If the destination is scheduled, the test starts " +
+        "running on that schedule, unattended; if it submits a form, each run is a real " +
+        "submission. The response says whether the destination is scheduled. Settings " +
+        "the test leaves at null (browser, viewport, screenshot comparison and threshold) " +
+        "and the suite's variables change with the move too.",
+      inputSchema: {
+        testId: z.string().describe("Test to move."),
+        suiteId: z.string().describe("Destination suite id."),
+        expectedCurrentSuite: z
+          .string()
+          .describe("The suite id you believe this test is in right now. Refused if it is not."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ testId, suiteId, expectedCurrentSuite }) =>
+      gated(writesAllowed(), "GHOST_INSPECTOR_ALLOW_WRITES", WHY_WRITES, () =>
+        moveTest({ testId, suiteId, expectedCurrentSuite }),
       ),
   );
 
