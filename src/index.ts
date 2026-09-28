@@ -17,7 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { redact, runsAllowed, writesAllowed } from "./config.js";
+import { claudeAddCommand, redact, runsAllowed, writesAllowed } from "./config.js";
 import { stripCredentials } from "./redact-record.js";
 import { request } from "./client.js";
 import { createSuite, duplicateTest } from "./create.js";
@@ -166,7 +166,7 @@ function gated(allowed: boolean, variable: string, why: string, run: () => Promi
           `Ask the user to set ${variable}=true in the environment that launches this ` +
           `server, then restart it. For a Claude Code user that is:\n` +
           `  claude mcp remove ghost-inspector -s user\n` +
-          `  claude mcp add ghost-inspector -s user -e ${variable}=true -- npx -y ghost-inspector-mcp\n` +
+          `  ${claudeAddCommand([`${variable}=true`])}\n` +
           `Call gi_whoami afterwards to confirm the gate is open.`,
       },
     ],

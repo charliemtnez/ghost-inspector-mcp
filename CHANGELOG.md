@@ -6,6 +6,19 @@ Tool names, input schemas and MCP annotations are part of the interface here: a
 calling model's behaviour depends on them, and a client may gate permissions on
 them. Changes to any of those are listed even when no code path moved.
 
+## [0.4.1] — 2026-09-28
+
+### Fixed
+
+- **Setup works on Windows.** Every instruction assumed a POSIX shell. On
+  native Windows the missing-key error now gives a PowerShell line that stores
+  the key as a user environment variable without echoing it, and the command a
+  refused gate suggests launches `npx` through `cmd /c`, since a client that
+  spawns without a shell cannot run `npx.cmd`. The README gains the Windows
+  equivalents for registering the server and storing the key, and notes that a
+  running client must be restarted to see a new variable.
+- The README said five write tools where there are six.
+
 ## [0.4.0] — 2026-09-28
 
 Fixes from a second real-use audit of the screenshot tools, where reading a
