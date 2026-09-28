@@ -95,7 +95,7 @@ Requires Node 18+. There is nothing to install ahead of time — your MCP client
 npx -y ghost-inspector-mcp
 ```
 
-That always runs the latest release. To pin one, which is what a team sharing a setup should do, name it: `npx -y ghost-inspector-mcp@0.4.0`.
+That always runs the latest release. To pin one, which is what a team sharing a setup should do, name it: `npx -y ghost-inspector-mcp@0.4.1`.
 
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D&quality=insiders)
 
@@ -117,9 +117,9 @@ Get your **personal** API key: Ghost Inspector → hover your name (top right) �
 |---|---|---|
 | `GHOST_INSPECTOR_API_KEY` | yes | Your personal key |
 | `GHOST_INSPECTOR_ORG_ID` | to execute a validation | Organization id — read it from `gi_whoami`. Not needed for `gi_plan_test` |
-| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Set to `true` to let the five write tools act. They are listed either way |
+| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Set to `true` to let the six write tools act. They are listed either way |
 | `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Set to `true` to let `gi_run_test` execute. **Not implied by `ALLOW_WRITES`** — an edit can be rolled back from the backup this server returns, a submitted form cannot |
-| `GHOST_INSPECTOR_BACKUP_DIR` | no (default `~/.ghost-inspector-mcp/backups`) | Where the write path saves the prior definition of every test it touches. Created owner-only |
+| `GHOST_INSPECTOR_BACKUP_DIR` | no (default `~/.ghost-inspector-mcp/backups`) | Where the write path saves the prior definition of every test it touches. Created owner-only on macOS and Linux; on Windows it inherits your user profile's permissions |
 
 Configuration is environment variables only. There is deliberately no `.env` support: this ships as a global command with no project directory of its own, and a second place to put a secret is a second place to leak it. The key is read fresh on every call, so rotating it takes effect without a restart.
 
@@ -127,6 +127,12 @@ Configuration is environment variables only. There is deliberately no `.env` sup
 
 ```bash
 claude mcp add ghost-inspector --scope user -- npx -y ghost-inspector-mcp
+```
+
+On native Windows (not WSL), `npx` is a `.cmd` script, which a client that starts programs without a shell cannot launch. Going through `cmd` works either way:
+
+```powershell
+claude mcp add ghost-inspector --scope user -- cmd /c npx -y ghost-inspector-mcp
 ```
 
 ### Claude Desktop, Cursor, Windsurf and anything else that takes a JSON config
@@ -141,6 +147,8 @@ claude mcp add ghost-inspector --scope user -- npx -y ghost-inspector-mcp
   }
 }
 ```
+
+On native Windows, if the server fails to start (`spawn npx ENOENT` or `EINVAL`), use `"command": "cmd"` with `"args": ["/c", "npx", "-y", "ghost-inspector-mcp"]`.
 
 No `env` block: the server inherits the environment of whatever launched your client, so exporting the key in your shell profile is enough and it never has to sit in a config file. Add one only if your client cannot inherit it.
 
@@ -161,6 +169,8 @@ claude mcp add ghost-inspector --scope user -- \
 
 The same wrapper works as `"command": "sh"` with `"args": ["-c", "..."]` in a JSON config. The key stays in a `600` file that only your user can read, and never enters the client's configuration.
 
+On Windows this problem does not arise: a user environment variable reaches every program started after it was set, desktop shortcuts included. What does catch people out is that a client already running keeps its old environment — quit it completely, including from the system tray, and start it again.
+
 ## Handling your API key
 
 Ghost Inspector authenticates with `?apiKey=` **in the query string**, so the credential ends up in shell history, proxy logs and AI conversation transcripts unless you are deliberate about it.
@@ -176,6 +186,18 @@ export GHOST_INSPECTOR_API_KEY="$(cat ~/.gi-key)"
 ```
 
 `printf` rather than `echo` matters: a trailing newline corrupts the key inside a query parameter.
+
+**On Windows**, in PowerShell, store it as a user environment variable instead:
+
+```powershell
+# Read-Host hides what you type, and PowerShell's history records only this
+# line, never the key itself.
+$k = Read-Host 'Ghost Inspector API key' -AsSecureString
+[Environment]::SetEnvironmentVariable('GHOST_INSPECTOR_API_KEY', [Net.NetworkCredential]::new('', $k).Password, 'User')
+Remove-Variable k
+```
+
+It is saved under your user account's registry settings (`HKCU\Environment`), readable by you and by administrators of the machine — the same trust as a `600` file in your home directory. Restart your MCP client afterwards. The other variables in the table above are set the same way, for example `[Environment]::SetEnvironmentVariable('GHOST_INSPECTOR_ALLOW_WRITES', 'true', 'User')`.
 
 This server will **never**:
 

@@ -31,16 +31,53 @@ export class ConfigError extends Error {
 export function requireApiKey(): string {
   const key = process.env[KEY_VAR]?.trim();
   if (!key) {
+    const store = onWindows()
+      ? `store it as a user environment variable from PowerShell, then restart your MCP client:\n` +
+        `  $k = Read-Host 'Ghost Inspector API key' -AsSecureString; ` +
+        `[Environment]::SetEnvironmentVariable('${KEY_VAR}', [Net.NetworkCredential]::new('', $k).Password, 'User')\n`
+      : `export it in the shell that launches this server:\n  export ${KEY_VAR}="$(cat ~/.gi-key)"\n`;
     throw new ConfigError(
       `${KEY_VAR} is not set. Get your personal key from Ghost Inspector ` +
-        `(hover your name, top right → Account Settings → API Access), then ` +
-        `export it in the shell that launches this server:\n` +
-        `  export ${KEY_VAR}="$(cat ~/.gi-key)"\n` +
+        `(hover your name, top right → Account Settings → API Access), then ${store}` +
         `Keys are per user and can be regenerated at any time, which revokes ` +
         `the previous one immediately. Do not share a key across a team.`,
     );
   }
   return key;
+}
+
+/**
+ * Whether the server runs on native Windows, where there is no login shell and variables are set per user.
+ *
+ * @return True on win32.
+ */
+export function onWindows(): boolean {
+  return process.platform === "win32";
+}
+
+/**
+ * The line that sets a variable for processes started afterwards, in this platform's shell.
+ *
+ * @param name The variable.
+ * @param value The value, or a placeholder.
+ * @return A POSIX export, or a PowerShell user-variable assignment.
+ */
+export function setVariableLine(name: string, value: string): string {
+  return onWindows()
+    ? `[Environment]::SetEnvironmentVariable('${name}', '${value}', 'User')   # PowerShell; restart your MCP client after`
+    : `export ${name}=${value}`;
+}
+
+/**
+ * How an MCP client should launch this server: native Windows needs cmd to resolve npx.
+ *
+ * @param env Variables to pass with `-e`, as NAME=value.
+ * @return The `claude mcp add` arguments after the server name.
+ */
+export function claudeAddCommand(env: string[] = []): string {
+  const flags = env.map((pair) => `-e ${pair} `).join("");
+  const launcher = onWindows() ? "cmd /c npx -y ghost-inspector-mcp" : "npx -y ghost-inspector-mcp";
+  return `claude mcp add ghost-inspector -s user ${flags}-- ${launcher}`;
 }
 
 /**
@@ -52,8 +89,8 @@ export function requireOrgId(): string {
   const org = process.env[ORG_VAR]?.trim();
   if (!org) {
     throw new ConfigError(
-      `${ORG_VAR} is not set. List your organizations first and export the id ` +
-        `you want to use:\n  export ${ORG_VAR}=<id from gi_whoami>`,
+      `${ORG_VAR} is not set. List your organizations with gi_whoami, then set the id ` +
+        `you want to use:\n  ${setVariableLine(ORG_VAR, "<id from gi_whoami>")}`,
     );
   }
   return org;

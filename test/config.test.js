@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { redact, requireApiKey, requireOrgId, writesAllowed } from "../dist/config.js";
+import { claudeAddCommand, redact, requireApiKey, requireOrgId, setVariableLine, writesAllowed } from "../dist/config.js";
 
 const KEY = "GHOST_INSPECTOR_API_KEY";
 const ORG = "GHOST_INSPECTOR_ORG_ID";
@@ -82,4 +82,37 @@ test("redact leaves text without a key untouched", () => {
   process.env[KEY] = "SECRETVALUE123";
   const message = "Element not found: #submit";
   assert.equal(redact(message), message);
+});
+
+/**
+ * Runs a function as though the server were on another platform.
+ *
+ * @param {string} platform A process.platform value.
+ * @param {() => void} body What to run.
+ */
+function onPlatform(platform, body) {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: platform });
+  try {
+    body();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+test("a Windows user missing the key is told how to set it in PowerShell, not a POSIX export", () => {
+  const saved = process.env.GHOST_INSPECTOR_API_KEY;
+  delete process.env.GHOST_INSPECTOR_API_KEY;
+  try {
+    onPlatform("win32", () => assert.throws(requireApiKey, (error) => /SetEnvironmentVariable\('GHOST_INSPECTOR_API_KEY'/.test(error.message) && !/export /.test(error.message)));
+    onPlatform("darwin", () => assert.throws(requireApiKey, (error) => /export GHOST_INSPECTOR_API_KEY=/.test(error.message)));
+  } finally {
+    if (saved !== undefined) process.env.GHOST_INSPECTOR_API_KEY = saved;
+  }
+});
+
+test("the command that opens a gate launches npx through cmd on native Windows only", () => {
+  onPlatform("win32", () => assert.match(claudeAddCommand(["GHOST_INSPECTOR_ALLOW_WRITES=true"]), /-e GHOST_INSPECTOR_ALLOW_WRITES=true -- cmd \/c npx -y ghost-inspector-mcp$/));
+  onPlatform("linux", () => assert.match(claudeAddCommand(), /-- npx -y ghost-inspector-mcp$/));
+  onPlatform("win32", () => assert.match(setVariableLine("GHOST_INSPECTOR_ORG_ID", "x"), /^\[Environment\]::SetEnvironmentVariable\('GHOST_INSPECTOR_ORG_ID', 'x', 'User'\)/));
 });
