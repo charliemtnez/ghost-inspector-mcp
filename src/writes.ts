@@ -44,6 +44,7 @@ import {
   hasNeverExecuted,
   isModule,
   request,
+  suiteIdOf,
   type SuiteRecord,
   type TestRecord,
 } from "./client.js";
@@ -618,6 +619,100 @@ export async function moveSuite(options: MoveOptions): Promise<MoveResult> {
     verification: { folderChanged, testCountIntact, storedFolder },
     notes,
   };
+}
+
+export interface MoveTestOptions {
+  testId: string;
+  /** Destination suite id. */
+  suiteId: string;
+  /** The suite id the caller believes the test is in now. */
+  expectedCurrentSuite: string;
+}
+
+export interface MoveTestResult {
+  applied: boolean;
+  refusedBecause?: string;
+  previousSuite: string | null;
+  test: { name: string; stepCount: number | null };
+  /** What the test inherits from the destination: its schedule above all. */
+  destination: { name: string; scheduled: boolean; screenshotCompareEnabled: boolean | null } | null;
+  verification: { suiteChanged: boolean; stepsIntact: boolean; storedSuite: string | null } | null;
+  notes: string[];
+}
+
+/**
+ * Moves a test to another suite, refusing unless it is in the suite the caller expects; reversible by moving it back.
+ *
+ * @param options The test, its destination, and the suite the caller expects it to be in.
+ * @returns What moved, how to undo it, what it now inherits, and the verification.
+ * @throws {GhostInspectorError} on an API failure.
+ * @throws {ConfigError} when the API key is not configured.
+ */
+export async function moveTest(options: MoveTestOptions): Promise<MoveTestResult> {
+  const before = await request<TestRecord>("GET", `tests/${options.testId}`);
+  const currentSuite = suiteIdOf(before);
+  const summary = { name: before.name ?? "(unnamed)", stepCount: Array.isArray(before.steps) ? before.steps.length : null };
+  const refuse = (why: string, notes: string[]): MoveTestResult => ({
+    applied: false,
+    refusedBecause: why,
+    previousSuite: currentSuite || null,
+    test: summary,
+    destination: null,
+    verification: null,
+    notes,
+  });
+  if (currentSuite !== options.expectedCurrentSuite) {
+    return refuse("the test is not in the suite you expected", [
+      `expectedCurrentSuite was "${options.expectedCurrentSuite}" but the test is in "${currentSuite}".`,
+      "Either you are targeting the wrong test or it has already been moved. Nothing was written.",
+    ]);
+  }
+  if (currentSuite === options.suiteId) return refuse("already in the destination suite", ["Nothing to do, and nothing was written."]);
+
+  const destination = await request<SuiteRecord & Record<string, unknown>>("GET", `suites/${options.suiteId}`);
+  await request("POST", `tests/${options.testId}/`, { body: { suite: options.suiteId } });
+  const after = await request<TestRecord>("GET", `tests/${options.testId}`);
+  const storedSuite = suiteIdOf(after) || null;
+  const suiteChanged = storedSuite === options.suiteId;
+  const stepsIntact = diffSteps(before.steps ?? [], after.steps ?? []).length === 0;
+  const scheduled = isScheduled(destination);
+
+  const notes: string[] = [`To undo: move it back to "${currentSuite}".`];
+  if (!suiteChanged) notes.push(`🔴 THE MOVE DID NOT LAND: the test reads suite "${storedSuite}" rather than "${options.suiteId}".`);
+  if (!stepsIntact) notes.push("🔴 The steps read differently after the move. A move should not touch them — compare with gi_get_test before anything else.");
+  if (suiteChanged && stepsIntact) notes.push("Verified: the test is in the destination suite with its steps unchanged.");
+  if (scheduled) {
+    notes.push(
+      `🔴 "${destination.name ?? options.suiteId}" runs on a schedule, and the test now runs with it, unattended. If it submits a form, every scheduled run is a real submission.`,
+    );
+  }
+  notes.push(
+    "Settings the test leaves at null — browser, viewport, screenshot comparison and its threshold — and the suite's variables now come from the destination, so its next run may differ.",
+  );
+  return {
+    applied: true,
+    previousSuite: currentSuite || null,
+    test: summary,
+    destination: {
+      name: destination.name ?? "",
+      scheduled,
+      screenshotCompareEnabled: destination.screenshotCompareEnabled ?? null,
+    },
+    verification: { suiteChanged, stepsIntact, storedSuite },
+    notes,
+  };
+}
+
+/**
+ * Whether a suite runs on a schedule: a frequency other than 0, or any advanced schedule entry.
+ *
+ * @param suite The suite record.
+ * @return True when it is scheduled, or when the fields are unreadable.
+ */
+function isScheduled(suite: SuiteRecord & Record<string, unknown>): boolean {
+  const advanced = suite["testFrequencyAdvanced"];
+  if (Array.isArray(advanced) && advanced.length > 0) return true;
+  return suite.testFrequency !== 0;
 }
 
 /** Re-exported so callers can filter a chain without another import. */

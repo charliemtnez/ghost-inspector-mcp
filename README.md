@@ -37,9 +37,11 @@ The table is a map of the surface. Each tool's own description, which is what yo
 | `gi_propose_repair` | read | Turns a diagnosis into a concrete proposal: the rewritten step, which test owns it, and the token to write it. Applies nothing, and refuses on a stale diagnosis or a step it cannot locate. |
 | `gi_plan_test` | read | Exactly what `gi_validate_test` would send — modules inlined, `{{variables}}` resolved, all three submit-guard layers applied — and whether it would be refused. Starts no browser and needs no organization id. |
 | `gi_validate_test` | read¹ | Runs a definition through on-demand execution, which executes and discards it, and reports every step. Replicates the suite's configuration and variables, and guards against submitting in three layers (see the safety model). |
-| `gi_screenshot_status` | read | A test's screenshot comparison: the measured difference against its threshold, and the current, difference and baseline images. |
+| `gi_screenshot_status` | read | A test's screenshot comparison: the settings in force (inherited from the suite when the test leaves them unset), the measured difference against the threshold, the image it was compared against, and the baseline the next run will use — which differ right after an accept. Up to 20 at once. |
+| `gi_screenshot_diff` | read | Where a screenshot changed: compares a result's full-size image with its baseline pixel by pixel and returns the changed bands plus full-size crops of the largest, baseline above current. |
 | `gi_update_test` | **write** | Replaces a test's steps, renames it or changes its start URL, behind four guards and a concurrency token. The prior definition is saved to an owner-only file. |
 | `gi_move_suite` | **write** | Moves a suite with its tests to another folder. Reversible; returns the prior folder so the undo is one call. |
+| `gi_move_test` | **write** | Moves one test to another suite — also how to retire one. Reversible; says whether the destination runs on a schedule, since the test starts running with it. |
 | `gi_create_suite` | **write** | Creates an empty suite, in a folder if you name one. Refuses a same-named sibling unless you insist. |
 | `gi_duplicate_test` | **write** | Copies a test, places it in a suite, renames it and optionally re-points its start URL in one call. **The only way to get a new test** — Ghost Inspector has no create endpoint — so a source test is required. Clears the copy's schedule by default. |
 | `gi_accept_screenshot` | **write** | Makes the latest screenshot the new baseline — only if it is the result you looked at, still the latest and finished, with a failing comparison. Returns the baseline it replaced, since the API cannot restore one. |
@@ -47,7 +49,7 @@ The table is a map of the surface. Each tool's own description, which is what yo
 
 ¹ `gi_validate_test` saves nothing, but it drives a real browser against a real URL, so it is not marked read-only.
 
-The five write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is. A refusal changes nothing and names the variable to set. `gi_whoami` reports both gates.
+The six write tools refuse unless `GHOST_INSPECTOR_ALLOW_WRITES` is exactly `true`, and `gi_run_test` refuses unless `GHOST_INSPECTOR_ALLOW_RUNS` is. A refusal changes nothing and names the variable to set. `gi_whoami` reports both gates.
 
 **Not included, on purpose.** Deletion of any kind. `DELETE /suites/{id}/` cascades to every test in the suite with no undo, and that blast radius does not belong behind an agent; deleting a test is left out for the same reason, since there is no version history to restore from.
 
@@ -93,7 +95,7 @@ Requires Node 18+. There is nothing to install ahead of time — your MCP client
 npx -y ghost-inspector-mcp
 ```
 
-That always runs the latest release. To pin one, which is what a team sharing a setup should do, name it: `npx -y ghost-inspector-mcp@0.3.0`.
+That always runs the latest release. To pin one, which is what a team sharing a setup should do, name it: `npx -y ghost-inspector-mcp@0.4.0`.
 
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=ghost-inspector&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22apiKey%22%2C%22description%22%3A%22Ghost%20Inspector%20API%20key%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghost-inspector-mcp%22%5D%2C%22env%22%3A%7B%22GHOST_INSPECTOR_API_KEY%22%3A%22%24%7Binput%3AapiKey%7D%22%7D%7D&quality=insiders)
 

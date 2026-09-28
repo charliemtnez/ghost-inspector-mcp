@@ -176,6 +176,10 @@ Verified empirically. The official docs omit all of these.
 
 **Writes**
 - `POST /tests/{id}/` accepts `steps` (undocumented) and a partial update **preserves every other field**. It also accepts `startUrl`, verified live 2026-09-24 on a disposable clone. The vendor's own reference documents only `name`.
+- 🔴 **The baseline is the newest result whose comparison passed**, not the image a result names in `screenshotCompareBaselineResult` — that field is what *that* result was measured against. Measured over 200 consecutive runs of one test: every run compared against the newest earlier result with `screenshotComparePassing: true`. Accepting flips the accepted result's own `screenshotComparePassing` to `true` while leaving its `screenshotCompareDifference` above the threshold and its `screenshotCompareBaselineResult` on the old image. So "passing above the threshold" is the signature of a manual accept, and right after one the latest result *is* the baseline. Verified end to end on a disposable clone (2026-09-28): run 1 became the baseline, a changed run 2 failed at 0.764, accepting it flipped it to passing, and run 3 was compared against run 2 at 0. Whether a functionally failed run with a passing comparison becomes the baseline is **not verified**.
+- 🔴 **Comparison settings inherit from the suite.** Every test on a real account stored `screenshotCompareEnabled: null` and `screenshotCompareThreshold: 0.1`; results in suites set to 0.2 or 0.3 were measured at the suite's value. So an inheriting test's own threshold is not the one applied — resolve both from the suite, and prefer the threshold a result records.
+- **Screenshot images** are public storage URLs (no credential), 8-bit RGBA PNG, full page: ~1280 × 15 000 px and ~3.5 MB. `screenshotCompare.compareOriginal` paints changes in translucent red over the page, which cannot be told from red content, so locate changes by comparing the two originals instead.
+- **Schedules live on the suite** (`testFrequency`, `testFrequencyAdvanced`), and a test runs with its suite. Moving a test into a scheduled suite starts it running unattended.
 - ✅ **`POST /tests/{id}/accept-screenshot/`** makes the latest result's screenshot the baseline. Verified live on a clone: the test then reads `screenshotComparePassing: true`, and **`dateUpdated` does not move**. When the latest comparison passed — a first run, say — it answers `VALIDATION_ERROR` "Unable to accept screenshot", so refuse that case before sending. The vendor documents GET as well as POST, which makes a GET a mutation; use POST only. There is no route to restore an earlier baseline.
 - `POST /suites/{id}/` accepts `folder` (undocumented) and moves the suite with its tests. Reversible.
 - `POST /folders/` creates. **`DELETE /folders/{id}/` does not exist** (404, HTML body) — an empty folder can only be removed from the UI, so folder names must be right the first time.
@@ -247,7 +251,7 @@ npm run build && node dist/index.js
 |---|---|---|
 | `GHOST_INSPECTOR_API_KEY` | yes | Per-user key from Account Settings → API Access |
 | `GHOST_INSPECTOR_ORG_ID` | for on-demand execution | Consumer's organization id — config, never hardcoded |
-| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Lets the five write tools act when `true`; they are listed either way |
+| `GHOST_INSPECTOR_ALLOW_WRITES` | no (default `false`) | Lets the six write tools act when `true`; they are listed either way |
 | `GHOST_INSPECTOR_ALLOW_RUNS` | no (default `false`) | Lets `gi_run_test` execute when `true`. Deliberately **not** implied by `ALLOW_WRITES` |
 | `GHOST_INSPECTOR_BACKUP_DIR` | no (default `~/.ghost-inspector-mcp/backups`) | Where the write path saves prior definitions. Read on every call |
 
