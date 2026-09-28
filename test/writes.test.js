@@ -21,6 +21,7 @@ import {
   buildUpdateBody,
   diffSteps,
   diffUntouched,
+  isScheduled,
   refusedResult,
   saveBackup,
   withBackup,
@@ -341,4 +342,13 @@ test("a saved backup is referenced, not inlined, unless verbose", () => {
     name: "the test", startUrl: "https://example.com/", stepCount: 2, dateUpdated: BEFORE,
   });
   assert.ok(withBackup(refusedResult(context(before), "x", []), saved, true).backup);
+});
+
+test("moving a test warns when the destination runs on a schedule, in either form", () => {
+  assert.equal(isScheduled({ _id: "s", testFrequency: 0, testFrequencyAdvanced: [] }), false);
+  assert.equal(isScheduled({ _id: "s", testFrequency: 86400, testFrequencyAdvanced: [] }), true);
+  assert.equal(isScheduled({ _id: "s", testFrequency: 0, testFrequencyAdvanced: [{ days: [1], hours: [9], minutes: [0] }] }), true);
+  assert.equal(isScheduled({ _id: "s", testFrequency: -2, testFrequencyAdvanced: [{}] }), true);
+  // Unreadable schedule fields read as scheduled: a missed warning means unattended form submissions.
+  assert.equal(isScheduled({ _id: "s" }), true);
 });

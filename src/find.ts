@@ -122,6 +122,16 @@ export function describeFound(test: TestRecord, suites: SuiteRecord[], folders: 
 }
 
 /**
+ * The results whose screenshot comparison runs and fails; an unknown state is left out rather than guessed.
+ *
+ * @param found Search results.
+ * @return Those failing their visual comparison.
+ */
+export function screenshotFailing(found: Found[]): Found[] {
+  return found.filter((entry) => entry.screenshotCompare.enabled === true && entry.screenshotCompare.passing === false);
+}
+
+/**
  * Searches the account: the listing for name, folder and suite, then each remaining test's own steps.
  *
  * @param filter What to look for.
@@ -141,9 +151,7 @@ export async function findTests(filter: FindFilter): Promise<FindReport> {
   const searchSteps = Boolean(step && (step.command || step.target || step.value));
 
   let found: Found[] = listed.map((test) => describeFound(test, suites, folders));
-  if (filter.screenshotFailing) {
-    found = found.filter((entry) => entry.screenshotCompare.enabled === true && entry.screenshotCompare.passing === false);
-  }
+  if (filter.screenshotFailing) found = screenshotFailing(found);
   if (searchSteps && step) {
     const ids = listed.map((test) => test._id);
     const definitions = await fetchDefinitionsClosure(ids, undefined, 0);

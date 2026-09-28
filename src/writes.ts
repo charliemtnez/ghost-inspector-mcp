@@ -709,7 +709,7 @@ export async function moveTest(options: MoveTestOptions): Promise<MoveTestResult
  * @param suite The suite record.
  * @return True when it is scheduled, or when the fields are unreadable.
  */
-function isScheduled(suite: SuiteRecord & Record<string, unknown>): boolean {
+export function isScheduled(suite: SuiteRecord & Record<string, unknown>): boolean {
   const advanced = suite["testFrequencyAdvanced"];
   if (Array.isArray(advanced) && advanced.length > 0) return true;
   return suite.testFrequency !== 0;
